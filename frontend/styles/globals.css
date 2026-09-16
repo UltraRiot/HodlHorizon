@@ -1,0 +1,424 @@
+/* Design tokens match the approved Hodl Horizon mockup:
+   dark navy background, warm gold accent, Newsreader + Work Sans.
+   This :root block is the default/dark theme, unchanged by the theme
+   toggle (components/Header.js) - see :root[data-theme="light"] below for
+   the light palette, and lib/theme.js for how data-theme gets set. */
+:root {
+  --bg: #0b1220;
+  --bg-elevated: #101a2e;
+  --bg-card: #141f38;
+  --border: #243252;
+  --border-soft: #1b2846;
+  --text: #eef2f8;
+  --text-dim: #aab5cc;
+  --text-mute: #7482a0;
+  --gold: #d4af6a;
+  --gold-strong: #e8c988;
+  /* Gold used as a FILLED background with dark (#1a1508) text/icon on top
+     (buttons, toggle switches, progress bars, active filter pills - see
+     the grep audit in this feature's summary) needs to stay this exact
+     vibrant value in both themes, since it's the dark text sitting on top
+     that needs the contrast, not the fill itself - darkening it in light
+     mode the way --gold (used as plain text/links) is darkened below
+     would make the dark text on top of it hard to read. --gold and
+     --gold-fill are identical here in dark theme; they diverge only under
+     :root[data-theme="light"]. */
+  --gold-fill: #d4af6a;
+  /* The sticky header's translucent/blurred background (Header.js) needs
+     its own token rather than reusing --bg directly, since it's an rgba()
+     tuple (alpha for the frosted-glass blur) - var() can't split a hex
+     variable's channels apart to add alpha to it. Was hardcoded as a
+     literal rgba(11,18,32,0.94) before this theme feature; that hardcoded
+     value never responded to the toggle, so it's a token now. */
+  --header-bg: rgba(11, 18, 32, 0.94);
+  --green: #3fc584;
+  --red: #e2646a;
+  --tag-stocks: #7aa8f2;
+  --tag-index: #b28cf0;
+  --tag-comm: #e0a25f;
+  --tag-crypto: #d4af6a;
+  --tag-analysis: #5fc0c9;
+  --tag-forex: #6fb8e0;
+  /* Economic Calendar impact dots (CalendarWidget.js) - kept separate
+     from --red/--gold/--text-mute so this mapping can never drift if
+     those brand/status tokens are ever retuned for something else.
+     --impact-medium is a distinct amber, deliberately not --gold (the
+     brand accent - a warning tier blending into the brand color reads as
+     "not urgent") and not --tag-comm (close in hue but a different value,
+     so a medium-impact dot is never mistaken for a Commodities tag).
+     --impact-low follows ForexFactory's own red/orange/yellow 3-tier
+     convention (a muted yellow, not a neutral gray) - tuned down from
+     FF's literal bright hex (that's calibrated for a white page and
+     would glare here) to stay legible without washing out against this
+     site's dark navy card background. */
+  --impact-high: #e2646a;
+  --impact-medium: #e0a24a;
+  --impact-low: #d9c15a;
+}
+
+/* Light theme - same variable names, new values, activated by
+   data-theme="light" on <html> (set by lib/theme.js and the toggle in
+   Header.js; see pages/_document.js for the pre-hydration inline script
+   that avoids a flash of the wrong theme on load).
+
+   --gold, --gold-strong, --green, and every --tag- and --impact- color
+   below are darkened from their dark-theme hue specifically for WCAG AA text
+   contrast (>=4.5:1 against both #ffffff and this theme's #f6f7fa) -
+   verified per-color with the actual relative-luminance formula, not
+   assumed, since the same darken% does NOT produce the same contrast
+   across different starting hues (a light blue like --tag-stocks needs
+   less darkening than a light gold to reach the same ratio, etc.).
+   --red already cleared AA at a lighter darken%, so it moved less.
+   --gold-fill is deliberately NOT in this list - see its comment above,
+   it stays the same vibrant value in both themes. */
+:root[data-theme="light"] {
+  --bg: #f6f7fa;
+  --bg-elevated: #eef1f6;
+  --bg-card: #ffffff;
+  --border: #dde3ee;
+  --border-soft: #e8ecf3;
+  --text: #0b1220;
+  --text-dim: #3d4a63;
+  --text-mute: #6b7690;
+  --gold: #836c42;
+  --gold-strong: #7d6d49;
+  --green: #287e54;
+  --red: #c73e46;
+  --tag-stocks: #5372a5;
+  --tag-index: #7d62a8;
+  --tag-comm: #8f683d;
+  --tag-crypto: #836c42;
+  --tag-analysis: #3d7b81;
+  --tag-forex: #47768f;
+  /* Same text-contrast treatment as above - CalendarWidget.js renders
+     these both as a small dot (no contrast requirement) AND as a 10px
+     uppercase impact label (text - needs AA, and at 10px even more so
+     than the 12px chip text elsewhere on this page). */
+  --impact-high: #b55055;
+  --impact-medium: #8f682f;
+  --impact-low: #7e7034;
+  --header-bg: rgba(246, 247, 250, 0.94);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  padding: 0;
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Work Sans", system-ui, sans-serif;
+}
+
+a {
+  color: var(--gold);
+  text-decoration: none;
+}
+a:hover {
+  color: var(--gold-strong);
+}
+
+.serif {
+  font-family: "Newsreader", Georgia, serif;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 5px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.chip-crypto { background: rgba(212, 175, 106, 0.14); color: var(--tag-crypto); }
+.chip-stocks { background: rgba(122, 168, 242, 0.14); color: var(--tag-stocks); }
+.chip-indices { background: rgba(178, 140, 240, 0.14); color: var(--tag-index); }
+.chip-commodities { background: rgba(224, 162, 95, 0.14); color: var(--tag-comm); }
+.chip-analysis { background: rgba(95, 192, 201, 0.16); color: var(--tag-analysis); }
+
+/* The dark-theme alphas above blend a vibrant hue over a DARK background,
+   which lightens a visible patch. Over this theme's near-white background
+   the same low alphas blend toward white and nearly disappear (verified,
+   not assumed - a 0.14 tint here reads as almost no tint at all). Each
+   alpha below was solved for two things at once: the patch stays visibly
+   distinct from the page background (>=6% relative-luminance drop from
+   white), AND the chip text color above still clears 4.5:1 against the
+   patch itself, not just against plain white - chip-stocks in particular
+   needed a narrower alpha (0.09, not 0.10) than the other four to land in
+   the band where both hold at once. */
+:root[data-theme="light"] .chip-crypto { background: rgba(212, 175, 106, 0.10); }
+:root[data-theme="light"] .chip-stocks { background: rgba(122, 168, 242, 0.09); }
+:root[data-theme="light"] .chip-indices { background: rgba(178, 140, 240, 0.10); }
+:root[data-theme="light"] .chip-commodities { background: rgba(224, 162, 95, 0.10); }
+:root[data-theme="light"] .chip-analysis { background: rgba(95, 192, 201, 0.10); }
+
+.card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 22px;
+}
+
+.up { color: var(--green); }
+.down { color: var(--red); }
+
+.container {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 0 48px;
+}
+
+@media (max-width: 720px) {
+  .container {
+    padding: 0 20px;
+  }
+}
+
+button {
+  font-family: inherit;
+  cursor: pointer;
+}
+
+/* ================================
+   Responsive - public site + admin
+   Breakpoint: 768px (tablet/phone), with a tighter 480px pass on the
+   article headline. Properties already set inline on an element need
+   !important to win here; brand-new elements below (nav toggles, the
+   admin nav dropdown) are styled entirely via these classes instead, so
+   they never need it.
+   ================================ */
+
+/* --- Public header / nav --- */
+.nav-toggle {
+  display: none;
+}
+
+@media (max-width: 768px) {
+  .site-header {
+    padding: 14px 20px !important;
+  }
+  .nav-toggle {
+    display: inline-flex !important;
+    align-items: center;
+    justify-content: center;
+    width: 34px;
+    height: 34px;
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text-dim);
+    font-size: 16px;
+  }
+  .nav-links {
+    display: none !important;
+  }
+  .nav-links.open {
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: flex-start !important;
+    gap: 4px !important;
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    background: var(--bg-elevated);
+    border-bottom: 1px solid var(--border);
+    padding: 10px 20px 16px;
+    z-index: 30;
+  }
+  .nav-links.open a {
+    padding: 9px 0;
+    width: 100%;
+  }
+}
+
+/* --- Ticker bar --- */
+@media (max-width: 768px) {
+  .ticker-bar {
+    padding: 10px 20px !important;
+    gap: 28px !important;
+  }
+}
+
+/* --- Homepage feed + sidebar --- */
+@media (max-width: 768px) {
+  .home-layout {
+    grid-template-columns: 1fr !important;
+    gap: 32px !important;
+    padding: 32px 20px 70px !important;
+  }
+}
+
+/* --- Markets Overview strip (homepage, full-width between Ticker and the
+   feed/sidebar grid) ---
+   Desktop (>=720px): a 5-column row, one column per asset class.
+   Mobile (<=719px): NOT a wrapped 2-column grid (too tall) - instead a
+   horizontally-scrolling, scroll-snapped strip of compact cards, one per
+   asset class, each showing only its first 2 rows (the 3rd is hidden here
+   rather than fetched separately, so desktop/mobile render from the same
+   markup with no extra request). The breakpoint sits at 719/720 so it
+   lines up with .container's own gutter breakpoint just above. */
+.markets-overview-grid {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 18px;
+}
+.markets-overview-col {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-top: 2px solid var(--col-accent, var(--gold-fill));
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+.markets-overview-col-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--text-mute);
+  font-weight: 600;
+  margin: 0 0 10px;
+}
+.markets-overview-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 0;
+  font-size: 13px;
+}
+.markets-overview-row + .markets-overview-row {
+  border-top: 1px solid var(--border-soft);
+}
+.markets-overview-symbol {
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.markets-overview-price {
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+@media (max-width: 719px) {
+  .markets-overview-grid {
+    display: flex;
+    gap: 10px;
+    overflow-x: auto;
+    scroll-snap-type: x mandatory;
+    -webkit-overflow-scrolling: touch;
+    padding-bottom: 2px;
+    scrollbar-width: none; /* Firefox */
+    -ms-overflow-style: none; /* old Edge/IE */
+  }
+  .markets-overview-grid::-webkit-scrollbar {
+    display: none; /* Chrome/Safari */
+  }
+  .markets-overview-col {
+    flex: 0 0 150px;
+    scroll-snap-align: start;
+    padding: 10px 12px;
+  }
+  .markets-overview-col-label {
+    font-size: 10px;
+    margin-bottom: 8px;
+  }
+  .markets-overview-row {
+    font-size: 11.5px;
+    padding: 4px 0;
+  }
+  /* Only 2 instruments on mobile, not 3 - the row markup is identical to
+     desktop, this just hides the 3rd. */
+  .markets-overview-row:nth-of-type(3) {
+    display: none;
+  }
+}
+
+/* --- Article page --- */
+@media (max-width: 768px) {
+  .article-headline {
+    font-size: 28px !important;
+  }
+}
+@media (max-width: 480px) {
+  .article-main {
+    padding: 32px 16px 70px !important;
+  }
+  .article-headline {
+    font-size: 24px !important;
+  }
+}
+
+/* --- Admin sidebar --- */
+.admin-nav-toggle {
+  display: none;
+}
+.admin-nav-group {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+}
+
+@media (max-width: 768px) {
+  .admin-shell {
+    flex-direction: column !important;
+  }
+  .admin-sidebar {
+    width: 100% !important;
+    flex-direction: row !important;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 16px !important;
+    border-right: none !important;
+    border-bottom: 1px solid var(--border);
+    position: relative;
+  }
+  .admin-logo-row {
+    margin-bottom: 0 !important;
+  }
+  .admin-nav-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 34px;
+    height: 34px;
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text-dim);
+    font-size: 16px;
+  }
+  .admin-nav-group {
+    display: none;
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    background: var(--bg-elevated);
+    border-bottom: 1px solid var(--border);
+    padding: 8px 16px 18px;
+    z-index: 30;
+  }
+  .admin-nav-group.open {
+    display: flex;
+  }
+  .admin-content {
+    padding: 20px 16px !important;
+  }
+}
+
+/* --- Admin article preview panel --- */
+/* Desktop: right-hand slide-in sliver (unchanged, set inline in the
+   component). Mobile: the same panel, same transform/transition, just
+   widened to cover the full screen - one property change, same component. */
+@media (max-width: 768px) {
+  .article-preview-panel {
+    width: 100vw !important;
+    border-left: none !important;
+    box-shadow: none !important;
+  }
+}
