@@ -163,6 +163,23 @@ export function buildAnalysisPrompt(snapshot, correctionNote, context = {}) {
     ? `\nUpcoming: ${context.calendarContext}. Mention this only if it's genuinely relevant to what you're analyzing here - don't force it in.\n`
     : "";
 
+  // Live testing caught the exact regression a prior commit fixed for the
+  // news pipeline: a real "Gold (GLD)" Analysis piece came back titled and
+  // worded as plain "Gold" throughout, with "$398.45" (GLD's ETF share
+  // price) stated as if it were spot gold (~$4,300s) - the qualifier that
+  // makes that number honest instead of wrong was simply dropped. Passing
+  // snapshot.symbol into the prompt text was not enough on its own; the
+  // model needs to be told explicitly that the qualifier is not optional
+  // decoration. Only fires for a symbol that actually has one - "BTC" or
+  // "S&P 500" have nothing to preserve here. See findMissingQualifier()
+  // below for the post-generation check backing this up - this instruction
+  // alone is not trusted to hold, the same lesson STYLE_INSTRUCTIONS'
+  // ETF-price rule already teaches (the model dropped that once too).
+  const qualifierMatch = /\(([^)]+)\)\s*$/.exec(snapshot.symbol || "");
+  const qualifierBlock = qualifierMatch
+    ? `\nThe symbol name is "${snapshot.symbol}" - use it EXACTLY as written, including the "(${qualifierMatch[1]})" part, in the title and every single time you state its price in the body. Never shorten it to "${snapshot.symbol.slice(0, qualifierMatch.index).trim()}" alone - that qualifier is what tells the reader this price is the fund/ETF's own share price, not the underlying asset's, and dropping it makes an accurate number read as a fabricated one.\n`
+    : "";
+
   const paragraphCount = 3 + (hasCoverage ? 1 : 0) + (hasCalendar ? 1 : 0) + 2;
   const minWords = paragraphCount * 65;
   const maxWords = paragraphCount * 90;
@@ -196,12 +213,12 @@ Write an analysis brief for ${snapshot.symbol}. Use ONLY these computed figures 
 - RSI (14-day): ${snapshot.rsi_14} (${snapshot.rsi_note})
 - Support: ${formatMarketValue(snapshot.support, snapshot.assetClass)}
 - Resistance: ${formatMarketValue(snapshot.resistance, snapshot.assetClass)}
-${coverageBlock}${calendarBlock}
+${qualifierBlock}${coverageBlock}${calendarBlock}
 Explain in plain language what these numbers suggest about current momentum. If related coverage or an upcoming event is given above, weave it in as genuine context, not a bolted-on extra paragraph. End with a plain-language note that this is not financial advice - readers should draw their own conclusions.
 ${correctionBlock}
 ${SEO_FIELD_RULES}
 
-Reminder before you write "body": exactly ${paragraphCount} paragraphs following the structure above, at least ${minWords} words total - not 3 short paragraphs, and not ${paragraphCount} very short ones either. Both would be wrong here.
+Reminder before you write "body": exactly ${paragraphCount} paragraphs following the structure above, at least ${minWords} words total - not 3 short paragraphs, and not ${paragraphCount} very short ones either. Both would be wrong here.${qualifierMatch ? ` Also: the symbol is "${snapshot.symbol}" everywhere, not just "${snapshot.symbol.slice(0, qualifierMatch.index).trim()}" - keep the "(${qualifierMatch[1]})" every time.` : ""}
 
 Respond with ONLY a JSON object with these exact keys: { "title": "...", "dek": "...", "body": "...", "seo_title": "50-60 characters, key fact/entity/number near the front", "seo_description": "120-155 characters, one complete sentence" }`;
 }

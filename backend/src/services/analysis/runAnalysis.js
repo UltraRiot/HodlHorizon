@@ -153,25 +153,101 @@ async function findUpcomingHighImpactEvent(withinDays = 5) {
 const ANALYSIS_PRICE_TOLERANCE = 0.05; // tighter than the 15% used elsewhere - this "truth" is exact, not a live approximation
 const NUMBER_RE = /\$?\s?([0-9][0-9,]*(?:\.[0-9]+)?)/g;
 
-export function findAnalysisFactMismatch(body, snapshot) {
-  const truePrice = Number(snapshot.price);
-  if (!Number.isFinite(truePrice) || truePrice <= 0) return null;
-
-  const candidates = [...(body || "").matchAll(NUMBER_RE)]
+function closestPriceMatch(text, truePrice) {
+  const candidates = [...(text || "").matchAll(NUMBER_RE)]
     .map((m) => Number(m[1].replace(/,/g, "")))
     .filter((n) => Number.isFinite(n) && n > 0);
   if (candidates.length === 0) return null; // nothing numeric to check - not itself a failure
 
-  const closest = candidates.reduce(
+  return candidates.reduce(
     (best, n) => {
       const diff = Math.abs(n - truePrice) / truePrice;
       return diff < best.diff ? { value: n, diff } : best;
     },
     { value: null, diff: Infinity }
   );
+}
 
-  if (closest.diff > ANALYSIS_PRICE_TOLERANCE) {
-    return `No figure in the body is close to the real computed price (${formatMarketValue(truePrice, snapshot.assetClass)}) it was given for ${snapshot.symbol} - closest stated number was ${closest.value.toLocaleString("en-US")} (${Math.round(closest.diff * 100)}% off) - verify before publishing.`;
+// Checks BOTH the title and the body independently, not the two concatenated
+// together - found live: a real published title read "S&P 500 Price at
+// $737.74 Amid Bearish Trend" (a hallucinated, 10x-off, wrong-format number -
+// the real value was 7,377.4, and stated with a "$" an index should never
+// get) while the BODY correctly used 7,377.4 throughout. Checking one
+// combined pool of candidates would have let the body's correct number mask
+// the title's wrong one as "the closest match" - the single most visible
+// text on the page would have shipped wrong while this check reported clean.
+export function findAnalysisFactMismatch(title, body, snapshot) {
+  const truePrice = Number(snapshot.price);
+  if (!Number.isFinite(truePrice) || truePrice <= 0) return null;
+
+  const bodyClosest = closestPriceMatch(body, truePrice);
+  if (bodyClosest && bodyClosest.diff > ANALYSIS_PRICE_TOLERANCE) {
+    return `No figure in the body is close to the real computed price (${formatMarketValue(truePrice, snapshot.assetClass)}) it was given for ${snapshot.symbol} - closest stated number was ${bodyClosest.value.toLocaleString("en-US")} (${Math.round(bodyClosest.diff * 100)}% off) - verify before publishing.`;
+  }
+
+  const titleClosest = closestPriceMatch(title, truePrice);
+  if (titleClosest && titleClosest.diff > ANALYSIS_PRICE_TOLERANCE) {
+    return `The title states ${titleClosest.value.toLocaleString("en-US")}, which is not close to the real computed price (${formatMarketValue(truePrice, snapshot.assetClass)}) for ${snapshot.symbol} (${Math.round(titleClosest.diff * 100)}% off) - verify before publishing.`;
+  }
+
+  return null;
+}
+
+// Extends the price-mismatch principle to the qualifier that DISTINGUISHES
+// an ETF's own share price from the real underlying asset's - see the
+// comment in buildAnalysisPrompt (prompts.js) on why the instruction alone
+// isn't trusted: it was dropped once in real output ("Gold (GLD)" became
+// plain "Gold" in both the title and body, with GLD's $398.45 ETF price
+// stated as if it were spot gold). Only fires for a symbol that actually
+// has a parenthetical qualifier - "BTC"/"S&P 500" have nothing to check.
+export function findMissingQualifier(title, body, snapshot) {
+  const match = /\(([^)]+)\)\s*$/.exec(snapshot.symbol || "");
+  if (!match) return null;
+
+  const qualifier = match[1];
+  const haystack = `${title || ""} ${body || ""}`;
+  if (haystack.includes(`(${qualifier})`)) return null;
+
+  const bareSymbol = snapshot.symbol.slice(0, match.index).trim();
+  return `The symbol "${snapshot.symbol}" was given, but its "(${qualifier})" qualifier doesn't appear anywhere in the generated title or body - it may be describing ${qualifier}'s own ETF price (${formatMarketValue(snapshot.price, snapshot.assetClass)}) as if it were the real ${bareSymbol} price. Verify before publishing.`;
+}
+
+// Extends the same principle to a DERIVED claim, not a raw figure - the
+// model is free to compute "X% away from support/resistance" in prose, and
+// nothing previously checked that arithmetic. Found live: a real Bitcoin
+// piece stated "3.2% away from its resistance and 3.2% above its support"
+// for price $78,116.82 / support $75,590.24 / resistance $80,329.35 - the
+// support figure was right (2,526.58 / 78,116.82 = 3.2%), but resistance
+// is actually 2,212.53 / 78,116.82 = 2.8%, not 3.2% - the model reused one
+// number for both instead of computing each separately. Tolerance is in
+// percentage POINTS (not a relative diff, since these are already
+// percentages) - a few tenths of a point allows for the model's own
+// rounding without letting a genuinely wrong figure (like the 0.4-point
+// gap above) through.
+const DISTANCE_TOLERANCE_PP = 0.3;
+const DISTANCE_CLAIM_RE = /(\d+(?:\.\d+)?)\s?%\s*(?:away\s+from|above|below|of|from)?\s*(?:its\s+)?(support|resistance)\b/gi;
+
+export function findAnalysisDistanceMismatch(body, snapshot) {
+  const price = Number(snapshot.price);
+  const support = Number(snapshot.support);
+  const resistance = Number(snapshot.resistance);
+  if (![price, support, resistance].every((n) => Number.isFinite(n) && n > 0)) return null;
+
+  const realPercent = {
+    support: (Math.abs(price - support) / price) * 100,
+    resistance: (Math.abs(resistance - price) / price) * 100,
+  };
+
+  for (const claim of (body || "").matchAll(DISTANCE_CLAIM_RE)) {
+    const stated = Number(claim[1]);
+    const level = claim[2].toLowerCase();
+    if (!Number.isFinite(stated)) continue;
+
+    const real = realPercent[level];
+    const diff = Math.abs(stated - real);
+    if (diff > DISTANCE_TOLERANCE_PP) {
+      return `Body claims price is ${stated}% from its ${level}, but the real figure computed from the given price/${level} is ${real.toFixed(1)}% (off by ${diff.toFixed(1)} percentage points) - verify before publishing.`;
+    }
   }
   return null;
 }
@@ -299,10 +375,18 @@ export async function runAnalysisScan() {
 
     // Same fact-check principle as scanAndGenerate.js's price-mismatch
     // guardrail, applied to the exact numbers this piece was handed - see
-    // findAnalysisFactMismatch()'s comment above for why this is actually
-    // the strongest case for the check (no live/source ambiguity, the
-    // real number is known exactly).
-    const priceMismatchNote = findAnalysisFactMismatch(draft.body, snapshot);
+    // each function's comment above for why this is actually the
+    // strongest case for the check (no live/source ambiguity, the real
+    // numbers are known exactly). Three independent checks, first failure
+    // wins - each catches a different real failure mode found in live
+    // output: a wrong price/support/resistance figure (in either the body
+    // or the title), a dropped ETF qualifier, and a wrong derived
+    // percentage-distance claim. All three route through the same
+    // price_mismatch flag/note rather than adding parallel DB columns.
+    const priceMismatchNote =
+      findAnalysisFactMismatch(draft.title, draft.body, snapshot) ||
+      findMissingQualifier(draft.title, draft.body, snapshot) ||
+      findAnalysisDistanceMismatch(draft.body, snapshot);
     const priceMismatch = Boolean(priceMismatchNote);
     if (priceMismatch) {
       console.warn(`Analysis job: fact-check mismatch for ${asset.symbol} - ${priceMismatchNote}`);
