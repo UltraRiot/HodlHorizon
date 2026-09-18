@@ -1,29 +1,39 @@
-// Background refresh for the Markets Overview strip's Alpha Vantage-backed
-// columns (indices, forex, commodities, stocks - see prices.js for the
-// actual fetch functions). GET /api/market/overview (routes/market.js)
-// only ever reads getOverviewCache() below and calls
-// maybeRefreshOverviewCache() to possibly kick off a background refresh -
-// it never blocks the response on a live Alpha Vantage call, so a page
-// load can never eat into the free tier's 25 requests/day budget directly.
-// Crypto isn't part of this cache - CoinGecko has no such constraint, so
-// routes/market.js keeps reading getCryptoTicker() through its existing
-// 60s lazy cache, unchanged.
+// Background refresh for the Markets Overview strip's columns (indices,
+// forex, commodities, stocks - see prices.js for the actual fetch
+// functions). GET /api/market/overview (routes/market.js) only ever reads
+// getOverviewCache() below and calls maybeRefreshOverviewCache() to
+// possibly kick off a background refresh - it never blocks the response
+// on a live provider call, so a page load can never eat into either
+// provider's daily budget directly. Crypto isn't part of this cache -
+// CoinGecko has no such constraint, so routes/market.js keeps reading
+// getCryptoTicker() through its existing 60s lazy cache, unchanged.
 //
 // RATE-LIMIT BUDGET (worked out explicitly, not guessed):
-//   indices:     0 calls - SPY/QQQ/DIA now read the same market_data_cache
-//                row the header ticker's Twelve Data refresh populates
-//                (see getIndicesTicker() in prices.js) instead of each
-//                fetching its own Alpha Vantage GLOBAL_QUOTE, which used to
-//                let this panel and the ticker disagree on the same ETF's
-//                price by a few real dollars.
-//   forex:       3 CURRENCY_EXCHANGE_RATE calls (EUR/USD, GBP/USD, USD/JPY)
-//   commodities: 2 time-series calls (BRENT, NATURAL_GAS) - WTI is also
-//                unified now, reading the header ticker's cached 'wti' row
-//                instead of its own call (getCommoditiesTicker() in prices.js).
-//   stocks:      3 GLOBAL_QUOTE calls            (AAPL, NVDA, MSFT)
-//   = 8 Alpha Vantage calls per refresh. At most once per
-//   REFRESH_INTERVAL_MS (24h, see below) = 8 calls/day, comfortably under
-//   the ~20/day target with headroom to spare.
+//   indices:     0 calls - SPY/QQQ/DIA read the same market_data_cache row
+//                the header ticker's Twelve Data refresh populates (see
+//                getIndicesTicker() in prices.js) instead of each fetching
+//                their own quote, which used to let this panel and the
+//                ticker disagree on the same ETF's price by a few real
+//                dollars.
+//   forex:       3 Twelve Data /quote credits (EUR/USD, GBP/USD, USD/JPY) -
+//                migrated off Alpha Vantage's FX_DAILY once confirmed
+//                against Twelve Data's real docs that /quote returns a
+//                real percent_change field for forex pairs too.
+//   commodities: 0 Twelve Data + 2 Alpha Vantage calls - WTI reads the
+//                header ticker's cached 'wti' row (still Alpha Vantage
+//                underneath, see alphaVantage.js) instead of its own call;
+//                Brent/Natural Gas stay on Alpha Vantage's time-series
+//                functions (getCommoditiesTicker() in prices.js) - Twelve
+//                Data's true "commodities" catalog is a paid-plan feature,
+//                unlike the forex-categorized XAU/USD gold now uses.
+//   stocks:      3 Twelve Data /quote credits (AAPL, NVDA, MSFT) -
+//                migrated off Alpha Vantage's GLOBAL_QUOTE.
+//   = 6 Twelve Data credits + 2 Alpha Vantage calls per refresh. At most
+//   once per REFRESH_INTERVAL_MS (24h, see below) = 6 Twelve Data
+//   credits/day (on top of refreshMarketData.js's own ~77/day - see that
+//   file's budget comment - still nowhere near the 800/day free tier) and
+//   2 Alpha Vantage calls/day (on top of that file's 4/day for WTI - 6/25
+//   total, comfortably under the free tier).
 const REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 // BUG HISTORY - why this file looks the way it does (fixed 2026-09-15,
@@ -115,11 +125,11 @@ async function persistCache() {
 // failure reason) - that's the log to check after this runs.
 export async function refreshOverviewCache() {
   const categories = Object.keys(CATEGORY_LOADERS);
-  // 8 Alpha Vantage calls now, not 12 - indices (all 3) and WTI within
-  // commodities read their shared market_data_cache row instead of making
-  // their own call (see getIndicesTicker()/getCommoditiesTicker() in
-  // prices.js), leaving only forex (3) + Brent/Natural Gas (2) + stocks (3).
-  console.log(`Markets overview: starting refresh (${categories.length} categories, 8 Alpha Vantage calls total)...`);
+  // 6 Twelve Data credits (forex 3, stocks 3) + 2 Alpha Vantage calls
+  // (Brent, Natural Gas) now - indices (all 3) and WTI within commodities
+  // read their shared market_data_cache row instead of making their own
+  // call (see getIndicesTicker()/getCommoditiesTicker() in prices.js).
+  console.log(`Markets overview: starting refresh (${categories.length} categories, 6 Twelve Data credits + 2 Alpha Vantage calls total)...`);
 
   const settled = await Promise.allSettled(
     categories.map((label) => CATEGORY_LOADERS[label](cache[label]))

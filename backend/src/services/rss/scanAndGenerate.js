@@ -214,18 +214,18 @@ export function findPriceMismatch(mentions, tickerBySymbol) {
 // a specific figure is either lifted from the source text or invented),
 // extended to Gold/Oil - caught live on "Gold Prices Fluctuate Like Meme
 // Coins After Fed Decision" stating gold "around $1,850" while spot gold
-// was actually near $4,370 that day. Oil's cached price (Alpha Vantage
-// WTI, via getCommoditySnapshot()) is a genuine $/barrel figure, so it can
-// be diffed directly like crypto. Gold's only cached price is GLD's ETF
-// share price - COMMODITY_LABELS's comment in services/marketData/
-// prices.js explains it's roughly a tenth of spot gold and drifts further
-// over time, so diffing a stated spot-gold figure against it would be
-// comparing two different things and would misfire constantly. Gold
-// mentions are instead checked against the actual source material the
-// model was given (the same headlines/snippets from buildArticlePrompt) -
-// if the number doesn't appear there either, there's nothing real behind
-// it. Oil falls back to the same source-text check on any scan where its
-// cached price is unavailable.
+// was actually near $4,370 that day. Both Gold and Oil now have a genuine
+// live number to diff directly, the same as crypto: Oil's cached price
+// (Alpha Vantage WTI, via getCommoditySnapshot()) has always been a real
+// $/barrel figure, and Gold's cache row now holds Twelve Data's real spot
+// gold quote (XAU/USD) instead of the GLD ETF's share price it used to -
+// GLD traded at roughly a tenth of spot gold and drifted further over
+// time (see instruments.js), which is exactly why diffing against it used
+// to be unsafe and Gold fell back to a source-text-only check. The
+// source-text fallback below still applies to both when a live price
+// isn't available for some reason (a stale/failed cache row) - it costs
+// nothing extra and catches a fabricated number that happens to slip
+// inside the tolerance band.
 const COMMODITY_MENTION_PATTERNS = {
   GOLD: /\b(gold|xau)\b/i,
   OIL: /\b(oil|wti|crude)\b/i,
@@ -260,9 +260,6 @@ function priceAppearsInText(value, text) {
   return [...candidates].some((c) => text.includes(c));
 }
 
-// tickerBySymbol here only ever has an OIL entry (see the comment above on
-// why GOLD is deliberately left out) - a GOLD mention always falls through
-// to the source-text check, which is the point, not a bug.
 export function findCommodityPriceMismatch(mentions, tickerBySymbol, sourceText) {
   for (const { symbol, value } of mentions) {
     const live = tickerBySymbol[symbol];
@@ -278,11 +275,11 @@ export function findCommodityPriceMismatch(mentions, tickerBySymbol, sourceText)
 }
 
 // Same idea, extended to Indices - the S&P 500/Nasdaq figures a Stocks/
-// Indices-category article states. Unlike Gold, this one DOES have a
-// trustworthy live number to diff against: getEquityTicker() now returns
-// real converted index points (see instruments.js's etfProxy conversion),
-// not SPY/QQQ's own share price, so a direct comparison is meaningful
-// here in a way it deliberately isn't for GLD-vs-spot-gold. The
+// Indices-category article states. This one has always had a trustworthy
+// live number to diff against: getEquityTicker() returns real converted
+// index points (see instruments.js's etfProxy conversion), not SPY/QQQ's
+// own share price, so a direct comparison is meaningful the same way it
+// now is for Gold too (see findCommodityPriceMismatch() above). The
 // source-text fallback still applies too, for the same reason it does for
 // crypto/commodities: it costs nothing extra and catches a fabricated
 // number that happens to slip inside the tolerance band.
@@ -475,17 +472,21 @@ export async function runScanAndGenerate() {
     }
   }
 
-  // Same idea for Commodities, but GOLD is deliberately never added here -
-  // see the comment on findCommodityPriceMismatch() above for why its only
-  // cached price (the GLD ETF) isn't a valid number to diff a stated
-  // spot-gold figure against.
+  // Same idea for Commodities. GOLD used to be deliberately left out here
+  // (see findCommodityPriceMismatch()'s comment - being rewritten
+  // alongside this) because its only cached price was the GLD ETF's share
+  // price, not a valid number to diff a stated spot-gold figure against.
+  // That's no longer true: Gold's cache row now holds Twelve Data's real
+  // spot gold quote (XAU/USD, see refreshMarketData.js/alphaVantage.js),
+  // so it gets a live-price check the same way OIL already does.
   let commodityTickerBySymbol = {};
   if (categories.some((c) => c.slug === "commodities")) {
     try {
-      const wti = await getCommoditySnapshot("wti");
+      const [gold, wti] = await Promise.all([getCommoditySnapshot("gold"), getCommoditySnapshot("wti")]);
+      if (gold) commodityTickerBySymbol.GOLD = gold.price;
       if (wti) commodityTickerBySymbol.OIL = wti.price;
     } catch (err) {
-      console.error(`AI engine: could not fetch the cached WTI price for the price-plausibility check - ${err.message}. Gold/Oil mentions will only be checked against source material this scan.`);
+      console.error(`AI engine: could not fetch the cached Gold/WTI price for the price-plausibility check - ${err.message}. Gold/Oil mentions will only be checked against source material this scan.`);
     }
   }
 

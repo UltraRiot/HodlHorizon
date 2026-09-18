@@ -1,22 +1,26 @@
 // Alpha Vantage client for the scheduled market-data-cache job
-// (refreshMarketData.js) - Gold (via the GLD ETF proxy - Alpha Vantage has
-// no native spot-gold or silver commodity endpoint; live-tested against
-// this exact account, see prices.js's fetchCommoditySeries() comment for
-// the "GOLD"/"SILVER" function-doesn't-exist error) and WTI crude (a real
-// Alpha Vantage commodity endpoint).
+// (refreshMarketData.js) - WTI crude only. Gold and SPY history migrated
+// to Twelve Data (see twelveData.js) once real spot gold (XAU/USD) and
+// stock/forex time_series were confirmed to work on Twelve Data's free
+// Basic plan - only WTI stayed here, since Twelve Data's true
+// "commodities" catalog (WTI/Brent/Natural Gas, as opposed to XAU/USD's
+// forex categorization) is a paid Grow-plan feature per their pricing
+// page (https://twelvedata.com/pricing, checked 2026-09-18), not
+// confirmed available on Basic/free.
 //
 // This is intentionally a separate, independent client from the
-// GLOBAL_QUOTE/CURRENCY_EXCHANGE_RATE/commodity-series helpers already in
-// prices.js that back the Markets Overview strip (overviewCache.js) - that
-// existing code shares a single cross-call throttle tuned to its own
-// request burst pattern (4 categories x 3 symbols), and this job has a
-// completely different, cron-driven call pattern. Reusing that throttle
-// would just make the two schedules interfere with each other for no
-// benefit; a few dozen lines of overlap is worth the independence.
+// GLOBAL_QUOTE/commodity-series helpers still in prices.js (Brent/Natural
+// Gas, also staying on Alpha Vantage for the same reason - see
+// overviewCache.js) that back the Markets Overview strip - that existing
+// code shares a single cross-call throttle tuned to its own request burst
+// pattern, and this job has a completely different, cron-driven call
+// pattern. Reusing that throttle would just make the two schedules
+// interfere with each other for no benefit; a few dozen lines of overlap
+// is worth the independence.
 //
 // Reuses STOCKS_DATA_API_KEY, the same Alpha Vantage account/key that
-// already powers the Overview strip and used to power the Analysis job's
-// live per-run fetches - there's one Alpha Vantage account here, not two.
+// still powers the Overview strip's Brent/Natural Gas columns - one
+// Alpha Vantage account here, not two.
 //
 // One attempt per call, no retry loop - see twelveData.js's comment for why.
 //
@@ -25,11 +29,8 @@
 // development never spends this key's real daily quota.
 import {
   isMarketDataDryRun,
-  DRY_RUN_GOLD_QUOTE_BODY,
   DRY_RUN_WTI_SERIES_BODY,
   DRY_RUN_WTI_HISTORY_RATE_LIMIT_BODY,
-  DRY_RUN_GOLD_DAILY_BODY,
-  DRY_RUN_SPY_DAILY_BODY,
 } from "./dryRunFixtures.js";
 
 const ALPHA_VANTAGE = "https://www.alphavantage.co/query";
@@ -93,24 +94,6 @@ function checkAlphaVantageError(data, context) {
   if (message) throw new Error(`Alpha Vantage ${context}: ${message}`);
 }
 
-// GLOBAL_QUOTE for the GLD ETF - a real, live-ish equity/ETF quote (unlike
-// the WTI commodity endpoint below, which is a daily time series).
-export async function getGoldQuote() {
-  const data = await fetchAlphaVantageBody(
-    (key) => `${ALPHA_VANTAGE}?function=GLOBAL_QUOTE&symbol=GLD&apikey=${key}`,
-    DRY_RUN_GOLD_QUOTE_BODY
-  );
-  checkAlphaVantageError(data, "GLOBAL_QUOTE GLD");
-  const quote = data["Global Quote"];
-  if (!quote || !quote["05. price"]) {
-    throw new Error("Alpha Vantage GLOBAL_QUOTE GLD: unexpected response shape.");
-  }
-  return {
-    price: Number(quote["05. price"]),
-    change_percent_24h: Number(String(quote["10. change percent"]).replace("%", "")),
-  };
-}
-
 // WTI has no separate real-time quote endpoint - it's a daily time series,
 // so a "quote" here just re-reads the same series and derives price/change
 // from the latest two points, same as history does. Re-polling this every
@@ -159,32 +142,4 @@ export async function getWtiCloses() {
   );
   const sorted = parseWtiSeries(data);
   return sorted.map((entry) => entry.value);
-}
-
-// TIME_SERIES_DAILY - used for GLD (gold's history, same ETF as the quote
-// above) and SPY (S&P 500 ETF, for the Analysis job's technical snapshot -
-// Twelve Data only supplies a real-time quote for SPY, not history, so SPY's
-// SMA/RSI/support/resistance still come from Alpha Vantage's daily bars,
-// same proven source as before this refactor).
-async function getDailyCloses(symbol, cannedBody) {
-  const data = await fetchAlphaVantageBody(
-    (key) => `${ALPHA_VANTAGE}?function=TIME_SERIES_DAILY&symbol=${symbol}&outputsize=compact&apikey=${key}`,
-    cannedBody
-  );
-  checkAlphaVantageError(data, `TIME_SERIES_DAILY ${symbol}`);
-  const series = data["Time Series (Daily)"];
-  if (!series) {
-    throw new Error(`Alpha Vantage TIME_SERIES_DAILY ${symbol}: unexpected response shape.`);
-  }
-  return Object.entries(series)
-    .sort(([dateA], [dateB]) => new Date(dateA) - new Date(dateB)) // oldest first
-    .map(([, entry]) => Number(entry["4. close"]));
-}
-
-export async function getGoldCloses() {
-  return getDailyCloses("GLD", DRY_RUN_GOLD_DAILY_BODY);
-}
-
-export async function getSpyCloses() {
-  return getDailyCloses("SPY", DRY_RUN_SPY_DAILY_BODY);
 }

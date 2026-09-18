@@ -22,7 +22,7 @@ export function describeGenerationError(err) {
 // Commodities (those markets are closed, so there's no genuine new price
 // movement to report) while leaving Crypto completely unaffected, since it
 // trades 24/7. Shared by scanAndGenerate.js (weekend daily caps) and
-// runAnalysis.js (skips SPY/GLD/WTI entirely on weekends).
+// runAnalysis.js (skips SPY/Gold/WTI entirely on weekends).
 export function isWeekendUTC(date = new Date()) {
   const day = date.getUTCDay(); // 0 = Sunday, 6 = Saturday
   return day === 0 || day === 6;

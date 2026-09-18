@@ -8,6 +8,7 @@
 // with no fresh cached data is simply omitted, never padded with a sample.
 import { query } from "../../db.js";
 import { convertEtfProxyPrice, instrumentForEtfTicker } from "./instruments.js";
+import { getTwelveDataQuote } from "./twelveData.js";
 
 const COINGECKO = "https://api.coingecko.com/api/v3";
 const ALPHA_VANTAGE = "https://www.alphavantage.co/query";
@@ -128,15 +129,14 @@ export async function getEquityTicker() {
   return items;
 }
 
-// "Gold (GLD)", not "Gold" or "GOLD" - GLD's ETF share price is roughly a
-// tenth of literal spot gold per ounce (the ETF is structured that way and
-// has drifted further from a clean 1/10 over time via its expense ratio),
-// so labelling GLD's real price as plain "Gold" would show a number that
-// LOOKS as fabricated as the sample data this replaced, even though it's
-// completely real. WTI has no such mismatch - Alpha Vantage's WTI series
-// is a genuine $/barrel figure, which is exactly why (unlike gold) it's
-// safe for getCommoditiesTicker() below to read this same 'wti' row too.
-const COMMODITY_LABELS = { gold: "Gold (GLD)", wti: "Oil (WTI)" };
+// "Gold" (not "Gold (GLD)" anymore) - this cache row now holds Twelve
+// Data's real spot gold quote (XAU/USD), not the GLD ETF's share price
+// (see refreshMarketData.js/alphaVantage.js), so there's no ETF-vs-spot
+// mismatch left to disclose in the label. WTI still has no such mismatch
+// either way - Alpha Vantage's WTI series is a genuine $/barrel figure,
+// which is exactly why it's safe for getCommoditiesTicker() below to read
+// this same 'wti' row too.
+const COMMODITY_LABELS = { gold: "Gold", wti: "Oil (WTI)" };
 
 export async function getCommoditySnapshot(key) {
   const row = await getFreshCacheRow(key, COMMODITY_FRESHNESS_MS);
@@ -156,7 +156,7 @@ export async function getCommoditySnapshot(key) {
 // null (never a guessed/partial snapshot) if the history row is missing,
 // failed, or older than HISTORY_FRESHNESS_MS.
 const HISTORY_CACHE_KEYS = { gold: "gold_history", wti: "wti_history", spy: "spy_history" };
-const HISTORY_LABELS = { gold: "Gold (GLD)", wti: "Oil (WTI)", spy: "S&P 500" };
+const HISTORY_LABELS = { gold: "Gold", wti: "Oil (WTI)", spy: "S&P 500" };
 const HISTORY_ASSET_CLASSES = { gold: "commodity", wti: "commodity", spy: "index" };
 
 export async function getCachedTechnicalSnapshot(key) {
@@ -177,25 +177,25 @@ export async function getCachedTechnicalSnapshot(key) {
 }
 
 // --- Markets Overview strip (routes/market.js's GET /api/market/overview) ---
-// Real Alpha Vantage data, refreshed on a background timer (see
-// services/marketData/overviewCache.js) rather than fetched per request -
-// the free tier is 25 requests/day, 5/minute (1/second burst), and a full
-// refresh across all four classes below costs exactly 12 calls (3 symbols
-// x 4 classes), so this can never be fetched live per page load.
-// getEquityTicker()/getCommoditySnapshot() above (the header ticker bar's
-// SPY/QQQ/Gold/WTI figures) are unrelated to this section - these are the
-// separate, real functions backing the homepage's Markets Overview strip
-// specifically, still fetching indices/forex/commodities/stocks live via
-// Alpha Vantage on their own request-triggered staleness check
-// (overviewCache.js), independent of the cron-scheduled
-// refreshMarketData.js above.
+// Real market data, refreshed on a background timer (see
+// services/marketData/overviewCache.js) rather than fetched per request,
+// backing the homepage's Markets Overview strip specifically - independent
+// of the cron-scheduled refreshMarketData.js above (which populates the
+// header ticker's SPY/QQQ/Gold/WTI figures via getEquityTicker()/
+// getCommoditySnapshot()). Indices and WTI within Commodities read the
+// SAME cached rows refreshMarketData.js populates rather than fetching
+// live at all - see their comments below. What's left fetching live here:
+// forex (Twelve Data) and stocks (Twelve Data) on their own
+// request-triggered staleness check, plus Brent/Natural Gas within
+// Commodities (Alpha Vantage - see fetchCommoditySeries()'s comment for
+// why those two specifically stayed there).
 //
 // Every getXTicker() below takes `previousItems` (that class's last
 // cached result, passed in by overviewCache.js) and falls back to a
-// symbol's last known good value if its individual Alpha Vantage call
-// fails, is rate-limited, or comes back malformed - see
-// checkAlphaVantageError() and fetchTickerClass() - so one bad symbol
-// degrades gracefully instead of blanking or crashing the whole column.
+// symbol's last known good value if its individual fetch fails, is
+// rate-limited, or comes back malformed - see checkAlphaVantageError()/
+// getTwelveDataQuote() and fetchTickerClass() - so one bad symbol degrades
+// gracefully instead of blanking or crashing the whole column.
 
 // Alpha Vantage returns HTTP 200 even on rate-limit/bad-symbol/bad-function
 // errors - it signals failure via a "Note" (rate/burst limit),
@@ -244,54 +244,6 @@ async function throttledAlphaVantageCall(makeRequest) {
   return makeRequest();
 }
 
-// GLOBAL_QUOTE - one call, one symbol. Used by both the Indices column
-// (via ETF proxies - Alpha Vantage has no native index quote) and the
-// Stocks column below.
-async function fetchGlobalQuote(symbol) {
-  const key = requireStocksApiKey();
-  const data = await throttledAlphaVantageCall(() => getJson(`${ALPHA_VANTAGE}?function=GLOBAL_QUOTE&symbol=${symbol}&apikey=${key}`));
-  checkAlphaVantageError(data, `GLOBAL_QUOTE ${symbol}`);
-  const quote = data["Global Quote"];
-  if (!quote || !quote["05. price"]) {
-    throw new Error(`Alpha Vantage GLOBAL_QUOTE ${symbol}: unexpected response shape.`);
-  }
-  return {
-    price: formatPrice(Number(quote["05. price"])),
-    change_percent_24h: Number(String(quote["10. change percent"]).replace("%", "")),
-  };
-}
-
-// FX_DAILY - switched from CURRENCY_EXCHANGE_RATE (found during a live
-// audit: that endpoint has no change% field at all, which is why the
-// Forex column was the one panel on this strip always showing "-" instead
-// of a real 24h delta next to Indices/Commodities/Stocks/Crypto). Same
-// call count as before - still 1 Alpha Vantage call per pair, 3 total -
-// so this doesn't touch the 25/day budget math in overviewCache.js; it's
-// a different function name returning a daily series instead of a single
-// live quote, from which price/change are derived the exact same
-// latest-vs-previous-close way fetchCommoditySeries() already does below.
-async function fetchCurrencyRate(from, to) {
-  const key = requireStocksApiKey();
-  const data = await throttledAlphaVantageCall(() => getJson(`${ALPHA_VANTAGE}?function=FX_DAILY&from_symbol=${from}&to_symbol=${to}&outputsize=compact&apikey=${key}`));
-  checkAlphaVantageError(data, `FX_DAILY ${from}/${to}`);
-  const series = data["Time Series FX (Daily)"];
-  if (!series) {
-    throw new Error(`Alpha Vantage FX_DAILY ${from}/${to}: unexpected response shape.`);
-  }
-  const sorted = Object.entries(series)
-    .map(([date, entry]) => ({ date, close: Number(entry["4. close"]) }))
-    .sort((a, b) => new Date(a.date) - new Date(b.date)); // oldest first
-  if (sorted.length < 2) {
-    throw new Error(`Alpha Vantage FX_DAILY ${from}/${to}: not enough data points for a % change.`);
-  }
-  const latest = sorted[sorted.length - 1].close;
-  const previous = sorted[sorted.length - 2].close;
-  return {
-    price: formatPrice(latest),
-    change_percent_24h: ((latest - previous) / previous) * 100,
-  };
-}
-
 // WTI / BRENT / NATURAL_GAS - Alpha Vantage's confirmed commodity
 // time-series function names. GOLD and SILVER were live-tested for this
 // feature specifically and do NOT exist as Alpha Vantage functions -
@@ -335,15 +287,24 @@ async function fetchCommoditySeries(functionName) {
 // yet" rather than a placeholder.
 //
 // Every outcome is logged individually - this is the log to check after a
-// refresh runs, to confirm each of the ~12 Alpha Vantage calls succeeded
-// or see exactly why it didn't.
+// refresh runs, to confirm each fetch succeeded or see exactly why it didn't.
 // assetClass here is the shared-formatter class ("index"/"forex"/
 // "commodity"/"stock"), separate from classLabel (just a log tag, kept in
 // its existing plural form - "indices"/"forex"/"commodities"/"stocks" -
 // so existing log lines don't change).
+//
+// Deliberately no blanket "no key -> return []" guard here anymore - the
+// four categories now depend on different keys (indices and WTI-within-
+// commodities need no live key at all, forex/stocks need
+// TWELVEDATA_API_KEY, Brent/Natural Gas need STOCKS_DATA_API_KEY). A
+// single shared guard checking one specific env var used to silently
+// blank ALL FOUR categories whenever that one var was unset, even for
+// categories that never needed it. Each fetchOne already throws a clear
+// "X_API_KEY is not set" error when its own key is missing, which
+// Promise.allSettled below catches per-symbol exactly like any other
+// failure - so a site configured with only one of the two keys still gets
+// real data for whichever categories that key actually covers.
 async function fetchTickerClass(items, previousItems, fetchOne, classLabel, assetClass) {
-  if (!process.env.STOCKS_DATA_API_KEY) return [];
-
   const settled = await Promise.allSettled(items.map((item) => fetchOne(item)));
 
   const results = settled.map((result, i) => {
@@ -411,13 +372,30 @@ export async function getIndicesTicker(previousItems = []) {
   );
 }
 
+// Migrated from Alpha Vantage's FX_DAILY to Twelve Data's /quote -
+// confirmed against Twelve Data's real docs (https://twelvedata.com/docs#quote,
+// fetched 2026-09-18) that /quote returns a real percent_change field for
+// forex pairs, the same as it does for equities (unlike Alpha Vantage's
+// CURRENCY_EXCHANGE_RATE, which had none - the original reason this used
+// to read FX_DAILY's daily series instead of a plain quote). `item.symbol`
+// is already Twelve Data's own "EUR/USD" format, so this reuses
+// getTwelveDataQuote() directly rather than a dedicated forex function.
 const FOREX_PAIRS = [
-  { symbol: "EUR/USD", name: "Euro / US Dollar", from: "EUR", to: "USD" },
-  { symbol: "GBP/USD", name: "British Pound / US Dollar", from: "GBP", to: "USD" },
-  { symbol: "USD/JPY", name: "US Dollar / Japanese Yen", from: "USD", to: "JPY" },
+  { symbol: "EUR/USD", name: "Euro / US Dollar" },
+  { symbol: "GBP/USD", name: "British Pound / US Dollar" },
+  { symbol: "USD/JPY", name: "US Dollar / Japanese Yen" },
 ];
 export async function getForexTicker(previousItems = []) {
-  return fetchTickerClass(FOREX_PAIRS, previousItems, (item) => fetchCurrencyRate(item.from, item.to), "forex", "forex");
+  return fetchTickerClass(
+    FOREX_PAIRS,
+    previousItems,
+    async (item) => {
+      const quote = await getTwelveDataQuote(item.symbol);
+      return { price: formatPrice(quote.price), change_percent_24h: quote.change_percent_24h };
+    },
+    "forex",
+    "forex"
+  );
 }
 
 // WTI + Brent + Natural Gas fill all 3 commodity slots - see
@@ -453,13 +431,24 @@ export async function getCommoditiesTicker(previousItems = []) {
 // Individual equities - distinct from getIndicesTicker() above (ETF
 // proxies for whole indices) and from getEquityTicker()'s SPY/QQQ (also
 // index proxies, just fetched from Twelve Data on a different schedule).
+// Migrated from Alpha Vantage's GLOBAL_QUOTE to Twelve Data's /quote,
+// which already covers real-time US equities on the free Basic plan.
 const STOCKS_OVERVIEW_SYMBOLS = [
   { symbol: "AAPL", name: "Apple Inc." },
   { symbol: "NVDA", name: "Nvidia Corp." },
   { symbol: "MSFT", name: "Microsoft Corp." },
 ];
 export async function getStocksOverviewTicker(previousItems = []) {
-  return fetchTickerClass(STOCKS_OVERVIEW_SYMBOLS, previousItems, (item) => fetchGlobalQuote(item.symbol), "stocks", "stock");
+  return fetchTickerClass(
+    STOCKS_OVERVIEW_SYMBOLS,
+    previousItems,
+    async (item) => {
+      const quote = await getTwelveDataQuote(item.symbol);
+      return { price: formatPrice(quote.price), change_percent_24h: quote.change_percent_24h };
+    },
+    "stocks",
+    "stock"
+  );
 }
 
 // --- Simple technical analysis, computed from real price history ---

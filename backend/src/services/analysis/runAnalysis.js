@@ -41,22 +41,29 @@ function ensureNotFinancialAdviceDisclaimer(body) {
 // and services/marketData/refreshMarketData.js, the scheduled job that
 // writes those rows) - never a live provider call from inside this job, and
 // never generated if that asset's cache row is missing, failed, or stale.
-// "Gold (GLD)" names the ETF proxy explicitly rather than the underlying
-// metal - GLD's share price is roughly a tenth of literal spot gold, so
-// labelling it plain "Gold" would read as a wrong (fabricated-looking)
-// number even though it's real (see instruments.js for why gold has no
-// safe conversion, unlike the index below). "S&P 500" (not "(SPY)") is
-// correct here, not an inconsistency: getCachedTechnicalSnapshot('spy')
-// converts SPY's raw closes to real index points before this ever sees
-// them (services/marketData/prices.js, added alongside the ticker/
-// Markets Overview unification) - the number really is the S&P 500 now,
-// not SPY's own share price, so the label matches. QQQ isn't on this
-// watchlist - Twelve Data only supplies a real-time quote for it (no
-// history), so there's no source for QQQ's SMA/RSI/support-resistance yet.
+// "Gold" (no qualifier) is correct here, not an oversight: this cache row
+// now holds Twelve Data's real spot gold quote (XAU/USD - a forex-
+// categorized symbol, free on their Basic plan), not the GLD ETF's share
+// price the way it used to (see prices.js/alphaVantage.js) - there's no
+// ETF-vs-spot mismatch left to disclose in the name. "S&P 500" (not
+// "(SPY)") is correct for the same underlying reason:
+// getCachedTechnicalSnapshot('spy') converts SPY's raw closes to real
+// index points before this ever sees them - the number really is the
+// S&P 500, not SPY's own share price. Oil is the one asset here still
+// genuinely proxied (Alpha Vantage's WTI series is real crude oil, not an
+// ETF, so "(WTI)" is disambiguating which benchmark rather than
+// disclosing a mismatch - see alphaVantage.js for why WTI didn't migrate
+// to Twelve Data alongside Gold). QQQ isn't on this watchlist for an
+// unrelated reason - nobody's built the Nasdaq-100 branch of this
+// watchlist yet, not a provider limitation: Twelve Data's /time_series
+// works for any symbol on the free tier (confirmed against their real
+// docs, https://twelvedata.com/docs#time-series, 2026-09-18), the same
+// endpoint SPY's history now uses, so QQQ's SMA/RSI/support-resistance
+// would be just as available as SPY's the day someone adds it here.
 const WATCHLIST = [
   { symbol: "BTC", kind: "crypto", coinGeckoId: "bitcoin" },
   { symbol: "ETH", kind: "crypto", coinGeckoId: "ethereum" },
-  { symbol: "Gold (GLD)", kind: "cached", cacheKey: "gold" },
+  { symbol: "Gold", kind: "cached", cacheKey: "gold" },
   { symbol: "S&P 500", kind: "cached", cacheKey: "spy" },
   { symbol: "Oil (WTI)", kind: "cached", cacheKey: "wti" },
 ];
@@ -69,7 +76,7 @@ const WATCHLIST = [
 const RELATED_COVERAGE_CONFIG = {
   BTC: { categorySlug: "crypto", keywords: ["bitcoin", "btc"] },
   ETH: { categorySlug: "crypto", keywords: ["ethereum", "eth"] },
-  "Gold (GLD)": { categorySlug: "commodities", keywords: ["gold"] },
+  Gold: { categorySlug: "commodities", keywords: ["gold"] },
   "S&P 500": { categorySlug: "indices", keywords: ["s&p 500", "s&p500", "s&p"] },
   "Oil (WTI)": { categorySlug: "commodities", keywords: ["oil", "wti", "crude"] },
 };
@@ -199,7 +206,12 @@ export function findAnalysisFactMismatch(title, body, snapshot) {
 // isn't trusted: it was dropped once in real output ("Gold (GLD)" became
 // plain "Gold" in both the title and body, with GLD's $398.45 ETF price
 // stated as if it were spot gold). Only fires for a symbol that actually
-// has a parenthetical qualifier - "BTC"/"S&P 500" have nothing to check.
+// has a parenthetical qualifier - "BTC"/"S&P 500" have nothing to check,
+// and neither does "Gold" anymore now that it's real spot gold (Twelve
+// Data's XAU/USD) rather than the GLD ETF proxy the incident above
+// happened on - this check stays in place for "Oil (WTI)" and any future
+// genuinely ETF-proxied watchlist entry, it just has nothing left to catch
+// for gold specifically.
 export function findMissingQualifier(title, body, snapshot) {
   const match = /\(([^)]+)\)\s*$/.exec(snapshot.symbol || "");
   if (!match) return null;
@@ -225,7 +237,21 @@ export function findMissingQualifier(title, body, snapshot) {
 // rounding without letting a genuinely wrong figure (like the 0.4-point
 // gap above) through.
 const DISTANCE_TOLERANCE_PP = 0.3;
-const DISTANCE_CLAIM_RE = /(\d+(?:\.\d+)?)\s?%\s*(?:away\s+from|above|below|of|from)?\s*(?:its\s+)?(support|resistance)\b/gi;
+// Live regression, found in a real published Ethereum piece: "4% away from
+// the resistance level" walked straight past this check for price
+// $2,500.41 / resistance $2,525.27 (real distance ~0.99%, the stated 4%
+// off by 3 full points) - the only reason being phrasing. The old pattern
+// required either nothing or "its" right before support/resistance, so
+// "the resistance level" (a "the" instead of "its", plus a trailing
+// "level") never matched at all - the check simply never ran on this
+// sentence, not a tolerance miss. Broadened to accept "the" alongside
+// "its" (both still optional, so a bare "3.2% above support" - the
+// original Bitcoin case - keeps matching too) and an optional trailing
+// "level" word. Deliberately not broadened further than that (no attempt
+// at every possible rephrasing) - these two are the safe, confirmed gaps;
+// anything wider risks matching an unrelated number near the word
+// "support"/"resistance" by coincidence.
+const DISTANCE_CLAIM_RE = /(\d+(?:\.\d+)?)\s?%\s*(?:away\s+from|above|below|of|from)?\s*(?:(?:its|the)\s+)?(support|resistance)(?:\s+level)?\b/gi;
 
 export function findAnalysisDistanceMismatch(body, snapshot) {
   const price = Number(snapshot.price);
@@ -246,7 +272,7 @@ export function findAnalysisDistanceMismatch(body, snapshot) {
     const real = realPercent[level];
     const diff = Math.abs(stated - real);
     if (diff > DISTANCE_TOLERANCE_PP) {
-      return `Body claims price is ${stated}% from its ${level}, but the real figure computed from the given price/${level} is ${real.toFixed(1)}% (off by ${diff.toFixed(1)} percentage points) - verify before publishing.`;
+      return `Body claims price is ${stated}% from ${level}, but the real figure computed from the given price/${level} is ${real.toFixed(1)}% (off by ${diff.toFixed(1)} percentage points) - verify before publishing.`;
     }
   }
   return null;
