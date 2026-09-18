@@ -19,6 +19,7 @@ router.get("/", async (req, res) => {
     `SELECT a.id, a.slug, a.title, a.status, a.created_at, a.published_at, a.source_count,
             a.category_mismatch, a.category_mismatch_note,
             a.price_mismatch, a.price_mismatch_note,
+            a.stale_content, a.stale_content_note,
             a.auto_publish_at,
             c.name AS category_name
      FROM articles a
@@ -62,11 +63,17 @@ router.patch("/:id", async (req, res) => {
   const params = [];
 
   const { rows: existingRows } = await query(
-    "SELECT status, published_at, price_mismatch, category_mismatch FROM articles WHERE id = $1",
+    "SELECT status, published_at, price_mismatch, category_mismatch, stale_content FROM articles WHERE id = $1",
     [req.params.id]
   );
   if (existingRows.length === 0) return res.status(404).json({ error: "Article not found." });
-  const { status: currentStatus, published_at: existingPublishedAt, price_mismatch: existingPriceMismatch, category_mismatch: existingCategoryMismatch } = existingRows[0];
+  const {
+    status: currentStatus,
+    published_at: existingPublishedAt,
+    price_mismatch: existingPriceMismatch,
+    category_mismatch: existingCategoryMismatch,
+    stale_content: existingStaleContent,
+  } = existingRows[0];
 
   const contentFieldsTouched = ["title", "dek", "body", "seo_title", "seo_description", "category_id"].some(
     (key) => req.body[key] !== undefined
@@ -104,7 +111,7 @@ router.patch("/:id", async (req, res) => {
     req.body.status === "published" &&
     currentStatus !== "published" &&
     existingPublishedAt &&
-    (existingPriceMismatch || existingCategoryMismatch)
+    (existingPriceMismatch || existingCategoryMismatch || existingStaleContent)
   ) {
     updates.push("corrected_at = COALESCE(corrected_at, now())");
   }

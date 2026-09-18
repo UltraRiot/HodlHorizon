@@ -21,7 +21,8 @@ HARD RULES:
 - Never use an em dash (—). Use a period, a comma, or "and" instead.
 - Never use these words/phrases: "notable," "significant development," "market participants," "in the world of," "as of this writing," "it remains to be seen," "moving forward," "stay tuned," "in conclusion," "landscape," "realm," "underscores," "boasts."
 - Never restate the headline's wording in the first sentence - lead with the fact itself.
-- Only use facts present in the source material below. Never invent a number, quote, or name.
+- Only use facts present in the source material below. Never invent a number, quote, or name. This applies even when a source gives you nothing but a headline - do not add a supporting statistic, date, or attribution you were not given, even one you're confident is real, since you have no way to know it is not years out of date. Report only what the headline itself states.
+- If the source material describes data or an event from a clearly past period (a named prior year, "last year," "in Q1 2023," etc.), say so plainly ("according to a report covering the first half of 2023") rather than presenting it as today's news - never let a stale figure read as the current situation just because it's in a fresh-dated article.
 - When you do quote a price for a commodity, index, or crypto asset, always name and price it the way TradingView and other trading platforms do - the real spot/futures/index instrument - so both a professional trader and a beginner checking a live chart see the same number. Never quote a related ETF or fund's share price as if it were the asset's own price (for example, do not say "gold is at $398" when that's the SPDR Gold Shares ETF (GLD) price - GLD trades at roughly 1/11th of the actual gold price because of how the fund is structured, so mixing the two produces a number that looks wrong even when it's technically accurate for GLD). This applies even if a source headline itself only mentions the ETF/fund ticker - convert your understanding to the real instrument rather than repeating the fund's price under the instrument's name. Reference instruments:
 ${instrumentReferenceText()}
 - Do not compare a serious financial instrument's price action to meme coins, casinos, or other slang/joke framing (e.g. "gold is fluctuating like meme coins") - describe the actual volatility in plain, professional terms instead. This site's voice is a wire-service journalist, not a social media post.
@@ -196,12 +197,45 @@ export function buildAnalysisPrompt(snapshot, correctionNote, context = {}) {
   // testing - a single combined instruction was easy for the model to
   // satisfy on the paragraph-count half while quietly shortchanging the
   // word-count half.
+  // Real published regression that motivated this bullet: a live Gold piece
+  // read "The 14-day Relative Strength Index (RSI) stands at 43, placing
+  // gold in the neutral zone... This reading implies that the asset is
+  // neither overbought nor oversold, which historically precedes a period
+  // of consolidation or potential price movement in either direction." -
+  // every clause there is true of ANY asset with an RSI of 43, stated
+  // nowhere specific to gold. The existing "don't pad with generic filler"
+  // bullet only names vague filler phrases ("markets remain volatile"), so
+  // a textbook definition sailed through untouched - it's specific-sounding
+  // prose, just not specific to the asset. This is a different failure mode
+  // and needs its own explicit rule, not a rewording of the filler one.
+  const noTextbookRule = `- The reader already knows what RSI, support, resistance, and a moving average ARE - never explain the general concept. Every paragraph must say what THIS specific reading implies for ${snapshot.symbol} right now, not what that kind of reading means in general. Test: if a paragraph could be copy-pasted into an analysis of a completely different asset with only the numbers swapped, it has failed this rule and must be rewritten around what's actually specific to ${snapshot.symbol}'s current situation.`;
+
+  // The abstract rule above, alone, was tested against real OpenAI output
+  // and did not hold - two fresh live drafts (Bitcoin, Ethereum) both still
+  // produced textbook RSI paragraphs after it was added ("This neutral
+  // reading suggests that there is no immediate overbought or oversold
+  // condition, which often precedes price corrections or rallies" - true
+  // of any asset at RSI 54, nothing Bitcoin-specific in it). This file's
+  // own opening comment already documents the fix for exactly this
+  // pattern: "loose adjectives... don't reliably change model output -
+  // hard rules and the few-shot examples... do." A concrete BAD/GOOD
+  // contrast, not another rephrased rule, is what's actually shown to work
+  // here - GOOD is built from this call's real snapshot numbers so the
+  // model has an on-topic template for THIS asset, not a generic sample.
+  const noTextbookExample = `Concrete example of this exact failure, from real published output (never repeat this pattern):
+BAD (textbook definition - this sentence is true of any asset with this RSI, nothing here is specific to the asset): "The 14-day RSI stands at 43, placing the asset in the neutral zone. This reading implies that the asset is neither overbought nor oversold, which historically precedes a period of consolidation or potential price movement in either direction."
+GOOD (states what this reading means for this asset, right now, at its real numbers): "${snapshot.symbol}'s RSI of ${snapshot.rsi_14} shows momentum has cooled from the push that carried it toward ${formatMarketValue(snapshot.resistance, snapshot.assetClass)}, without falling far enough to flag the kind of oversold reading that's preceded its sharper pullbacks - there's no exhaustion signal in either direction at ${formatMarketValue(snapshot.price, snapshot.assetClass)} right now."
+Hold every paragraph in this piece to the GOOD standard above, not just the RSI one - state the specific implication for ${snapshot.symbol} at ${formatMarketValue(snapshot.price, snapshot.assetClass)}, never the general rule a textbook would give for any asset in this position.`;
+
   const lengthOverride = `LENGTH OVERRIDE FOR THIS PIECE (ignore the "Maximum 130 words / three paragraphs" rule above entirely - it's for news briefs, not Analysis, and does not apply here):
 - Write exactly ${paragraphCount} paragraphs.
 - The body must be at least ${minWords} words, ideally ${minWords}-${maxWords}. A short news-brief-length answer (under 200 words) fails this instruction even if the paragraph count is right - each paragraph below needs real, specific development (multiple sentences), not one short sentence each.
 - Follow this structure, one paragraph per step (a step can be short if it genuinely has little to add, but should still be a real sentence or two, not skipped or merged with another step):
 ${buildAnalysisOutline(hasCoverage, hasCalendar)}
-- Do not pad length with generic filler ("markets remain volatile," "investors should stay alert") to hit the word count - every added sentence should say something specific and real about these numbers or the context given, not restate the same point in more words.`;
+- Do not pad length with generic filler ("markets remain volatile," "investors should stay alert") to hit the word count - every added sentence should say something specific and real about these numbers or the context given, not restate the same point in more words.
+${noTextbookRule}
+
+${noTextbookExample}`;
 
   return `${STYLE_INSTRUCTIONS}
 
@@ -218,7 +252,7 @@ Explain in plain language what these numbers suggest about current momentum. If 
 ${correctionBlock}
 ${SEO_FIELD_RULES}
 
-Reminder before you write "body": exactly ${paragraphCount} paragraphs following the structure above, at least ${minWords} words total - not 3 short paragraphs, and not ${paragraphCount} very short ones either. Both would be wrong here.${qualifierMatch ? ` Also: the symbol is "${snapshot.symbol}" everywhere, not just "${snapshot.symbol.slice(0, qualifierMatch.index).trim()}" - keep the "(${qualifierMatch[1]})" every time.` : ""}
+Reminder before you write "body": exactly ${paragraphCount} paragraphs following the structure above, at least ${minWords} words total - not 3 short paragraphs, and not ${paragraphCount} very short ones either. Both would be wrong here. Also: every paragraph must say what these numbers mean for ${snapshot.symbol} specifically right now, not explain what RSI/support/resistance/a moving average generally mean - the reader already knows the general concept, so a paragraph that would still read correctly with the numbers swapped for a different asset has failed and must be rewritten.${qualifierMatch ? ` Also: the symbol is "${snapshot.symbol}" everywhere, not just "${snapshot.symbol.slice(0, qualifierMatch.index).trim()}" - keep the "(${qualifierMatch[1]})" every time.` : ""}
 
 Respond with ONLY a JSON object with these exact keys: { "title": "...", "dek": "...", "body": "...", "seo_title": "50-60 characters, key fact/entity/number near the front", "seo_description": "120-155 characters, one complete sentence" }`;
 }

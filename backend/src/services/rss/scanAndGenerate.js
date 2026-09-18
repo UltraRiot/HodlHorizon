@@ -376,6 +376,77 @@ export function findPercentMismatch(mentions, sourceText) {
   return null;
 }
 
+// Stale/thin source content: real incident that motivated this (article
+// 207, "Central Banks Increase Gold Reserves Amid Geopolitical Tensions")
+// - its one source (Investing.com - Commodities) supplied NO content past
+// a headline (confirmed live: every item from that feed, and from Yahoo
+// Finance and Investing.com's Stock Market News feed, comes through
+// rss-parser with an empty contentSnippet - not a truncation problem,
+// there's nothing to truncate). STYLE_INSTRUCTIONS already says "only use
+// facts present in the source material... never invent a number," but
+// with nothing but a bare headline to work from, the model still wrote a
+// full body with a specific figure ("400 tons... in the first half of
+// 2023") and a named attribution, neither present anywhere in the source -
+// it filled the gap from its own training knowledge. The number was real,
+// just years stale and presented as today's news. No existing guardrail
+// catches this: findPercentMismatch/findCommodityPriceMismatch etc. all
+// check a STATED number against source text, but a bare quantity like
+// "400 tons" (no $ sign, no %) matches none of their patterns, and none of
+// them ask the more basic question this does - was there ANY real source
+// content for the model to have drawn a specific claim from at all.
+//
+// Below MIN_SUBSTANTIVE_SNIPPET_LENGTH counts as "no real content" - the
+// live sample that sized this (see fetchSources.js's MAX_SNIPPET_LENGTH
+// comment) showed a clean gap between feeds with genuinely empty snippets
+// (0 chars) and every feed with real content (110+ chars) - there was no
+// borderline case in practice to tune more precisely for.
+const MIN_SUBSTANTIVE_SNIPPET_LENGTH = 30;
+
+export function groupHasNoSubstantiveContent(group) {
+  return group.every((i) => (i.contentSnippet || "").trim().length < MIN_SUBSTANTIVE_SNIPPET_LENGTH);
+}
+
+// Second, independent signal: even when a source DOES supply real content,
+// that content can still be explicitly ABOUT a past period rather than
+// current news (a retrospective, a "looking back" piece) - a genuinely
+// fresh RSS entry (todays's pubDate, passes FRESHNESS_WINDOW_HOURS above)
+// whose subject is old. Same asymmetric title-vs-body trust already
+// established in this file for category keywords (see
+// contentLacksCategoryKeywords in articleUtils.js): a past-year mention in
+// the HEADLINE is trusted outright (the headline is what the story is
+// fundamentally about), but a single incidental past-year mention buried
+// in a snippet - a story using an old data point as background context for
+// an otherwise current one, which is legitimate and common - needs 2+ such
+// mentions before it's treated as a real signal, not just one.
+const CURRENT_YEAR = new Date().getUTCFullYear();
+const RELATIVE_PAST_RE = /\b(last year|a year ago)\b/i;
+
+function pastYearMentionCount(text) {
+  const years = (text.match(/\b20\d{2}\b/g) || []).map(Number).filter((y) => y < CURRENT_YEAR);
+  const relative = RELATIVE_PAST_RE.test(text) ? 1 : 0;
+  return years.length + relative;
+}
+
+export function findStaleSubjectMention(group) {
+  for (const item of group) {
+    if (pastYearMentionCount(item.title) > 0) {
+      return `Headline "${item.title}" explicitly names a past period - confirm this is being reported as historical context, not as current news.`;
+    }
+  }
+  const bodyText = group.map((i) => i.contentSnippet || "").join(" ");
+  if (pastYearMentionCount(bodyText) >= 2) {
+    return `Source material repeatedly references a past period (not the headline) - confirm the article states that plainly rather than presenting it as current.`;
+  }
+  return null;
+}
+
+export function findStaleOrThinSource(group) {
+  if (groupHasNoSubstantiveContent(group)) {
+    return `No source for this story (${group.map((i) => i.sourceName).join(", ")}) supplied any real content beyond a headline - any specific figure, date, or attribution in the draft was not verifiably from this report and may be the model filling the gap from general knowledge, possibly outdated.`;
+  }
+  return findStaleSubjectMention(group);
+}
+
 // Pure status decision, extracted from the loop below so it's directly
 // testable (the same reason filterFreshItems()/findPriceMismatch() above
 // are exported rather than left inline).
@@ -399,12 +470,13 @@ export function decideArticleStatus({
   isMockProvider,
   categoryMismatch,
   priceMismatch,
+  staleContent,
   verificationClean,
   isMultiSourceAutoPublish,
   autoPublishDelayHours,
   now = new Date(),
 }) {
-  const hasAnyFlag = categoryMismatch || priceMismatch || !verificationClean;
+  const hasAnyFlag = categoryMismatch || priceMismatch || staleContent || !verificationClean;
   if (isMockProvider || hasAnyFlag) {
     return { status: "review", autoPublishAt: null };
   }
@@ -441,6 +513,7 @@ export async function runScanAndGenerate() {
     skippedError: 0,
     categoryMismatch: 0,
     priceMismatch: 0,
+    staleContent: 0,
     filteredStale: 0,
     scheduled: 0,
   };
@@ -676,11 +749,24 @@ export async function runScanAndGenerate() {
         }
       }
 
+      // Stale/thin source content: does the group backing this draft have
+      // any real material for the model to have drawn a specific claim
+      // from, and if so, is that material itself explicitly about a past
+      // period? See findStaleOrThinSource()'s comment above for the real
+      // incident (article 207) this exists to catch.
+      const staleContentNote = findStaleOrThinSource(group);
+      const staleContent = Boolean(staleContentNote);
+      if (staleContent) {
+        console.warn(`AI engine: stale/thin source - "${draft.title}" ${staleContentNote}`);
+        totals.staleContent += 1;
+      }
+
       const isMultiSourceAutoPublish = group.length >= minSources && autoPublish;
       const { status, autoPublishAt } = decideArticleStatus({
         isMockProvider: draft.provider === "mock",
         categoryMismatch,
         priceMismatch,
+        staleContent,
         verificationClean: draft.verificationClean,
         isMultiSourceAutoPublish,
         autoPublishDelayHours,
@@ -712,6 +798,8 @@ export async function runScanAndGenerate() {
         categoryMismatchNote,
         priceMismatch,
         priceMismatchNote,
+        staleContent,
+        staleContentNote,
         autoPublishAt,
       });
 

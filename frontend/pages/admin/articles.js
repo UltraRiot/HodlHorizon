@@ -156,6 +156,14 @@ export default function AdminArticles() {
                           ⚠ Price?
                         </span>
                       )}
+                      {a.stale_content && (
+                        <span
+                          title={a.stale_content_note}
+                          style={{ fontSize: 11, color: "var(--red)", fontWeight: 700, whiteSpace: "nowrap" }}
+                        >
+                          ⚠ Stale/thin source?
+                        </span>
+                      )}
                     </div>
                   </Td>
                   <Td>
@@ -324,6 +332,7 @@ function ArticlePreviewPanel({ open, loading, article, onClose, onHold }) {
               {[
                 article.category_mismatch && article.category_mismatch_note,
                 article.price_mismatch && article.price_mismatch_note,
+                article.stale_content && article.stale_content_note,
               ]
                 .filter(Boolean)
                 .map((note) => (

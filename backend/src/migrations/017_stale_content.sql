@@ -1,0 +1,22 @@
+-- Stale/thin source content flag: real incident that motivated this was
+-- article 207 ("Central Banks Increase Gold Reserves Amid Geopolitical
+-- Tensions") - its one RSS source (Investing.com - Commodities) supplied
+-- literally no content beyond a headline (confirmed live: every item in
+-- that feed, and Yahoo Finance's and Investing.com Stock Market News',
+-- comes through rss-parser with an empty contentSnippet), yet the
+-- published body stated specific figures ("400 tons... in the first half
+-- of 2023," a World Gold Council attribution) that were never in any
+-- source text at all - the model filled them in from its own training
+-- knowledge, and got a real fact but a stale one, presented as today's
+-- news on a fresh-dated RSS entry. Two distinct signals feed this one
+-- flag (see findStaleOrThinSource() in services/rss/scanAndGenerate.js):
+-- (1) every source in the story's group has no substantive content at
+-- all - the exact condition that let this happen - and (2) a source's
+-- title, or its body content more than once, explicitly names a past
+-- year/quarter, which risks a genuinely-fresh RSS entry about a
+-- retrospective/repost piece getting reported as current. Flagging only,
+-- same pattern as category_mismatch (migrations/006) and price_mismatch
+-- (migrations/009): never rewrites the article, just forces a human look
+-- before it can publish.
+ALTER TABLE articles ADD COLUMN IF NOT EXISTS stale_content BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE articles ADD COLUMN IF NOT EXISTS stale_content_note TEXT;

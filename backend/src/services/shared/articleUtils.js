@@ -171,11 +171,14 @@ export async function insertArticle({
   publishedAt,
   // Defaulted so runAnalysis.js's existing call (which never passes these -
   // Analysis articles have no source-based category to mismatch against,
-  // and no crypto-price check applies to them) doesn't need to change.
+  // no crypto-price check applies to them, and no RSS source group exists
+  // to be thin/stale) doesn't need to change.
   categoryMismatch = false,
   categoryMismatchNote = null,
   priceMismatch = false,
   priceMismatchNote = null,
+  staleContent = false,
+  staleContentNote = null,
   // Set only for status="scheduled" (delayed auto-publish - see
   // services/rss/scanAndGenerate.js). null for every other status.
   autoPublishAt = null,
@@ -184,10 +187,10 @@ export async function insertArticle({
     `INSERT INTO articles
        (slug, title, dek, body, category_id, status, seo_title, seo_description,
         read_minutes, source_count, ai_provider, published_at, category_mismatch, category_mismatch_note,
-        price_mismatch, price_mismatch_note, auto_publish_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+        price_mismatch, price_mismatch_note, stale_content, stale_content_note, auto_publish_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
      RETURNING id`,
-    [slug, title, dek, body, categoryId, status, seoTitle, seoDescription, readMinutes, sourceCount, aiProvider, publishedAt, categoryMismatch, categoryMismatchNote, priceMismatch, priceMismatchNote, autoPublishAt]
+    [slug, title, dek, body, categoryId, status, seoTitle, seoDescription, readMinutes, sourceCount, aiProvider, publishedAt, categoryMismatch, categoryMismatchNote, priceMismatch, priceMismatchNote, staleContent, staleContentNote, autoPublishAt]
   );
   return rows[0].id;
 }
