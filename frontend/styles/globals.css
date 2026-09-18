@@ -31,6 +31,14 @@
      literal rgba(11,18,32,0.94) before this theme feature; that hardcoded
      value never responded to the toggle, so it's a token now. */
   --header-bg: rgba(11, 18, 32, 0.94);
+  /* Header-specific border, separate from the shared --border token used
+     everywhere else (card dividers, chip outlines) - added because the
+     light-theme --border value below reads fine on a white card but is
+     too close to the header's near-page-color background to read as a
+     boundary at all (light theme's header-vs-page contrast complaint).
+     Same value as --border here, so dark theme (already fine per that
+     complaint) renders pixel-identical to before. */
+  --header-border: #243252;
   --green: #3fc584;
   --red: #e2646a;
   --tag-stocks: #7aa8f2;
@@ -97,7 +105,24 @@
   --impact-high: #b55055;
   --impact-medium: #8f682f;
   --impact-low: #7e7034;
-  --header-bg: rgba(246, 247, 250, 0.94);
+  /* --bg-elevated's tone (not --bg's, which is literally identical to the
+     page background here - f6f7fa - so the sticky header used to blend
+     into the page with zero contrast at rest, only the blur gave it away
+     once something scrolled under it) plus a visibly stronger border -
+     --border's light value (#dde3ee) is only ~25/255 off from --bg per
+     channel, a hairline that disappears next to dark theme's much bigger
+     --border-vs-bg gap. Fixes the "washed out" header/nav contrast. */
+  --header-bg: rgba(238, 241, 246, 0.94);
+  --header-border: #c1cbdc;
+}
+
+/* A hairline border alone still reads flat on a light background from a
+   distance - a soft shadow gives the sticky header a sense of sitting
+   above the page, the way dark theme's much higher-contrast border
+   already implies depth on its own. Light theme only; dark theme's header
+   is untouched. */
+:root[data-theme="light"] .site-header {
+  box-shadow: 0 2px 10px rgba(11, 18, 32, 0.06);
 }
 
 * {

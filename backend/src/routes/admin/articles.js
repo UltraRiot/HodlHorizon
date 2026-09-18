@@ -61,9 +61,12 @@ router.patch("/:id", async (req, res) => {
   const updates = [];
   const params = [];
 
-  const { rows: existingRows } = await query("SELECT status FROM articles WHERE id = $1", [req.params.id]);
+  const { rows: existingRows } = await query(
+    "SELECT status, published_at, price_mismatch, category_mismatch FROM articles WHERE id = $1",
+    [req.params.id]
+  );
   if (existingRows.length === 0) return res.status(404).json({ error: "Article not found." });
-  const currentStatus = existingRows[0].status;
+  const { status: currentStatus, published_at: existingPublishedAt, price_mismatch: existingPriceMismatch, category_mismatch: existingCategoryMismatch } = existingRows[0];
 
   const contentFieldsTouched = ["title", "dek", "body", "seo_title", "seo_description", "category_id"].some(
     (key) => req.body[key] !== undefined
@@ -84,6 +87,26 @@ router.patch("/:id", async (req, res) => {
   // Publishing for the first time stamps published_at.
   if (req.body.status === "published") {
     updates.push("published_at = COALESCE(published_at, now())");
+  }
+
+  // Trust/transparency signal (corrected_at, migrations/016): a real
+  // republish, not a first-time publish - this article already went live
+  // once (published_at already set) and is currently sitting somewhere
+  // other than "published" (review/scheduled/draft) flagged by the
+  // price/category-mismatch guardrails, and a human is now sending it
+  // back out. Deliberately does NOT fire on a plain first-time publish
+  // (published_at was null) or on a never-flagged article moving out of
+  // review for an unrelated reason (an editor's own hold, say) - only the
+  // specific "this was live, got pulled for a real caught issue, and is
+  // going live again" transition counts as a correction worth disclosing.
+  // Set once and never touched again after that (see the migration).
+  if (
+    req.body.status === "published" &&
+    currentStatus !== "published" &&
+    existingPublishedAt &&
+    (existingPriceMismatch || existingCategoryMismatch)
+  ) {
+    updates.push("corrected_at = COALESCE(corrected_at, now())");
   }
 
   // dateModified in the NewsArticle JSON-LD (pages/article/[slug].js) reads

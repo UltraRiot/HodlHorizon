@@ -76,9 +76,9 @@ export async function anthropicGenerateArticle(items, previousCoverage, correcti
   return { ...parsed, tokensEstimate, costEstimateUsd };
 }
 
-export async function anthropicGenerateAnalysis(snapshot, correctionNote) {
+export async function anthropicGenerateAnalysis(snapshot, correctionNote, context) {
   const { parsed, tokensEstimate, costEstimateUsd } = await callAnthropic(
-    buildAnalysisPrompt(snapshot, correctionNote),
+    buildAnalysisPrompt(snapshot, correctionNote, context),
     ARTICLE_FIELDS,
     "submit_analysis"
   );

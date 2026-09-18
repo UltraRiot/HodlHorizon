@@ -87,20 +87,28 @@ function enforceSeoLength(result) {
 
 const MAX_BODY_PARAGRAPHS = 3;
 
+// Analysis pieces are the one category allowed to run long (5-7
+// paragraphs - real synthesis/context, not a padded rewrite) - see
+// generateAnalysis() below and buildAnalysisPrompt()'s length override in
+// prompts.js. Every other category stays on MAX_BODY_PARAGRAPHS.
+const ANALYSIS_MAX_BODY_PARAGRAPHS = 7;
+
 // Verification in code, not just hope in the prompt - the same principle
 // that made Structured Outputs replace prompt-only instructions for
 // seo_title/seo_description. Checked once per generation, retried once
 // with an explicit correction note if it fails, then accepted as-is
 // either way - never retried more than once, so a persistently bad draft
 // can't loop. Reuses the exact same word-overlap function and similarity
-// bar as the pre-save duplicate-article check (articleUtils.js): first
-// paragraph 1 vs paragraph 2, then paragraph 3 checked separately against
-// each of paragraph 1 and paragraph 2 (not the two combined - checking
-// separately catches a paragraph 3 that only restates paragraph 2, say,
-// which a combined-bag-of-words comparison could dilute below the threshold).
+// bar as the pre-save duplicate-article check (articleUtils.js): every
+// paragraph from the second on is compared against every paragraph before
+// it (not just its immediate neighbor), and the worst (highest-similarity)
+// match wins - generalized from the old hardcoded "para 2 vs para 1, para
+// 3 vs para 1 or para 2" so it still catches redundancy in a longer
+// Analysis body (paragraph 6 restating paragraph 2, say), not just a
+// 3-paragraph news brief.
 //
 // Known limitation, worth knowing rather than hiding: this only catches
-// LEXICAL redundancy (shared words). A paragraph 3 that restates an
+// LEXICAL redundancy (shared words). A paragraph that restates an
 // earlier point in fully paraphrased language - different vocabulary,
 // same underlying claim - can still slip through, because Jaccard
 // similarity has no notion of meaning, only word overlap. Confirmed
@@ -109,34 +117,58 @@ const MAX_BODY_PARAGRAPHS = 3;
 // in almost entirely different words, and measures at ~0.08-0.11 overlap
 // against paragraphs 1 and 2 - nowhere near the 0.6 bar. That gap is
 // inherent to word-overlap similarity, not a bug in this check.
-function findBodyProblem(body) {
+function findBodyProblem(body, maxParagraphs = MAX_BODY_PARAGRAPHS) {
   const paragraphs = (body || "").split("\n\n").filter((p) => p.trim().length > 0);
 
-  if (paragraphs.length > MAX_BODY_PARAGRAPHS) {
-    return `the body has ${paragraphs.length} paragraphs but the limit is ${MAX_BODY_PARAGRAPHS}`;
+  if (paragraphs.length > maxParagraphs) {
+    return `the body has ${paragraphs.length} paragraphs but the limit is ${maxParagraphs}`;
   }
 
-  if (paragraphs.length >= 2) {
-    const similarity = jaccardSimilarity(normalize(paragraphs[0]), normalize(paragraphs[1]));
-    if (similarity >= DUPLICATE_SIMILARITY_THRESHOLD) {
-      return `paragraph 1 and paragraph 2 repeat the same information (${Math.round(similarity * 100)}% word overlap) instead of paragraph 1 being the fact and paragraph 2 being why it matters`;
+  const normalized = paragraphs.map((p) => normalize(p));
+  for (let i = 1; i < normalized.length; i++) {
+    let worst = null;
+    for (let j = 0; j < i; j++) {
+      const similarity = jaccardSimilarity(normalized[i], normalized[j]);
+      if (!worst || similarity > worst.similarity) worst = { against: j, similarity };
     }
-  }
-
-  if (paragraphs.length >= 3) {
-    const words3 = normalize(paragraphs[2]);
-    const similarityTo1 = jaccardSimilarity(words3, normalize(paragraphs[0]));
-    const similarityTo2 = jaccardSimilarity(words3, normalize(paragraphs[1]));
-    const worseMatch = similarityTo1 >= similarityTo2
-      ? { against: "paragraph 1", similarity: similarityTo1 }
-      : { against: "paragraph 2", similarity: similarityTo2 };
-
-    if (worseMatch.similarity >= DUPLICATE_SIMILARITY_THRESHOLD) {
-      return `paragraph 3 repeats information already in ${worseMatch.against} (${Math.round(worseMatch.similarity * 100)}% word overlap) instead of adding a different figure, a different named party's reaction, or a concrete next step`;
+    if (worst && worst.similarity >= DUPLICATE_SIMILARITY_THRESHOLD) {
+      return `paragraph ${i + 1} repeats information already in paragraph ${worst.against + 1} (${Math.round(worst.similarity * 100)}% word overlap) instead of adding new information`;
     }
   }
 
   return null;
+}
+
+// Extracted from generateArticle() so generateAnalysis() can run the exact
+// same lexical + semantic verification pipeline instead of a separate,
+// weaker check of its own - just parameterized on maxParagraphs (3 for a
+// news brief, 7 for Analysis) since the redundancy-API call itself still
+// only looks at the first 3 paragraphs (the "fact, why it matters, new
+// detail" shape every article - including the first 3 paragraphs of a
+// longer Analysis piece - is expected to follow); paragraphs beyond that
+// are still covered by findBodyProblem()'s lexical pairwise check above,
+// just not by the extra semantic API call.
+async function verifyBody(body, provider, maxParagraphs) {
+  const lexicalProblem = findBodyProblem(body, maxParagraphs);
+  if (lexicalProblem || provider === "mock") {
+    return { problem: lexicalProblem };
+  }
+  const paragraphs = (body || "").split("\n\n").filter((p) => p.trim().length > 0);
+  if (paragraphs.length < 3) {
+    return { problem: null };
+  }
+  const redundancyCheck = await generateRedundancyCheck({
+    paragraph1: paragraphs[0],
+    paragraph2: paragraphs[1],
+    paragraph3: paragraphs[2],
+  });
+  if (!redundancyCheck.adds_new_information) {
+    return { problem: `an independent redundancy check found paragraph 3 doesn't add new information: ${redundancyCheck.reason}` };
+  }
+  if (!redundancyCheck.paragraph1_has_anchor_fact) {
+    return { problem: `an independent check found paragraph 1 lacks a genuine anchor fact: ${redundancyCheck.anchor_fact_reason}` };
+  }
+  return { problem: null };
 }
 
 // Independent verification check - a small extra AI call. Originally
@@ -219,31 +251,8 @@ export async function generateArticle(items, previousCoverage, assignedCategoryN
   // path (scanAndGenerate.js) rather than just "was retried and moved on
   // regardless," which was fine when every non-auto-publish draft was
   // heading to indefinite review anyway but isn't precise enough now.
-  async function verifyBody(body) {
-    const lexicalProblem = findBodyProblem(body);
-    if (lexicalProblem || provider === "mock") {
-      return { problem: lexicalProblem };
-    }
-    const paragraphs = (body || "").split("\n\n").filter((p) => p.trim().length > 0);
-    if (paragraphs.length < 3) {
-      return { problem: null };
-    }
-    const redundancyCheck = await generateRedundancyCheck({
-      paragraph1: paragraphs[0],
-      paragraph2: paragraphs[1],
-      paragraph3: paragraphs[2],
-    });
-    if (!redundancyCheck.adds_new_information) {
-      return { problem: `an independent redundancy check found paragraph 3 doesn't add new information: ${redundancyCheck.reason}` };
-    }
-    if (!redundancyCheck.paragraph1_has_anchor_fact) {
-      return { problem: `an independent check found paragraph 1 lacks a genuine anchor fact: ${redundancyCheck.anchor_fact_reason}` };
-    }
-    return { problem: null };
-  }
-
   let result = await callProvider();
-  let { problem } = await verifyBody(result.body);
+  let { problem } = await verifyBody(result.body, provider, MAX_BODY_PARAGRAPHS);
   let verificationClean = !problem;
 
   if (problem) {
@@ -256,7 +265,7 @@ export async function generateArticle(items, previousCoverage, assignedCategoryN
     // a still-dirty retry just means verificationClean stays false, which
     // routes it to plain review instead of delayed auto-publish/immediate
     // publish - never a second regeneration attempt.
-    verificationClean = !(await verifyBody(result.body)).problem;
+    verificationClean = !(await verifyBody(result.body, provider, MAX_BODY_PARAGRAPHS)).problem;
   }
 
   const withFallback = applySeoFallback(result, {
@@ -276,26 +285,44 @@ export async function generateArticle(items, previousCoverage, assignedCategoryN
 // snapshot: the output of getMarketSnapshot() (real computed technicals) -
 // used only by the Analysis job (services/analysis/runAnalysis.js), never
 // by the news pipeline.
-export async function generateAnalysis(snapshot) {
+// context (optional): { relatedCoverage, calendarContext } - see
+// runAnalysis.js for where these come from (recent same-asset coverage
+// already published in the regular news categories, and any imminent
+// high-impact calendar event) and prompts.js's buildAnalysisPrompt for how
+// they're turned into prompt text. Both are genuinely optional: an asset
+// with no recent related coverage and no imminent calendar event still
+// gets a perfectly valid Analysis piece from the snapshot numbers alone,
+// same as before this feature existed.
+//
+// Runs the exact same verifyBody() pipeline generateArticle() does (see
+// its comment above), just with ANALYSIS_MAX_BODY_PARAGRAPHS instead of
+// MAX_BODY_PARAGRAPHS and verificationClean now actually returned - it
+// used to retry once on a lexical problem but never surfaced whether the
+// retry actually worked, so runAnalysis.js had nothing to gate
+// publish-vs-review on beyond a mock-provider check. It does now, the
+// same way scanAndGenerate.js already does for news articles.
+export async function generateAnalysis(snapshot, context) {
   const provider = currentProvider();
 
   async function callProvider(correctionNote) {
     const result =
       provider === "openai"
-        ? await openaiGenerateAnalysis(snapshot, correctionNote)
+        ? await openaiGenerateAnalysis(snapshot, correctionNote, context)
         : provider === "anthropic"
-        ? await anthropicGenerateAnalysis(snapshot, correctionNote)
+        ? await anthropicGenerateAnalysis(snapshot, correctionNote, context)
         : mockGenerateAnalysis(snapshot, correctionNote);
     await logUsage(provider, "analysis", result.tokensEstimate, result.costEstimateUsd);
     return result;
   }
 
   let result = await callProvider();
+  let { problem } = await verifyBody(result.body, provider, ANALYSIS_MAX_BODY_PARAGRAPHS);
+  let verificationClean = !problem;
 
-  const problem = findBodyProblem(result.body);
   if (problem) {
     console.warn(`AI provider: retrying analysis generation once - ${problem}.`);
     result = await callProvider(problem);
+    verificationClean = !(await verifyBody(result.body, provider, ANALYSIS_MAX_BODY_PARAGRAPHS)).problem;
   }
 
   const withFallback = applySeoFallback(result, {
@@ -303,7 +330,7 @@ export async function generateAnalysis(snapshot) {
     fallbackDescription: result.dek,
     context: `analysis "${result.title}"`,
   });
-  return { ...enforceSeoLength(withFallback), provider };
+  return { ...enforceSeoLength(withFallback), provider, verificationClean };
 }
 
 // label/body: a human-readable name and the item's existing content, used

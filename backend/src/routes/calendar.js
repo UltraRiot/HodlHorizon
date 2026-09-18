@@ -9,9 +9,30 @@ const router = Router();
 // only the WHERE clause differs between "today" and "upcoming".
 const EVENT_FIELDS = "id, title, event_time, impact, category, region, forecast, previous";
 
+// De-duplicates by (title, region, calendar day) before returning, keeping
+// the highest-id (most recently synced) row of each group. Found live:
+// ForexFactory itself nudges an event's reported time by a few minutes
+// between daily fetches (a provisional time getting refined), and the
+// sync job's (title, event_time) unique index doesn't catch that - it
+// only matches an exact-to-the-minute repeat - so the same real event
+// (e.g. "BOJ Policy Rate") could end up as two rows a few minutes apart.
+// services/calendar/syncForexFactory.js was fixed to stop this from
+// happening on new syncs, but rows already sitting in the table from
+// before that fix needed a query-time fix too, done here rather than a
+// one-off DELETE so it's non-destructive (no history lost) and
+// self-healing against any future edge case, not just the ones already
+// found. Two genuinely different occurrences of a recurring title (weeks
+// apart, or the same day in two different regions) are untouched, since
+// both region and day are part of the group key.
 async function selectEvents(whereClause, params) {
   const { rows } = await query(
-    `SELECT ${EVENT_FIELDS} FROM calendar_events WHERE ${whereClause} ORDER BY event_time ASC`,
+    `SELECT ${EVENT_FIELDS} FROM (
+       SELECT DISTINCT ON (title, region, date_trunc('day', event_time)) ${EVENT_FIELDS}
+       FROM calendar_events
+       WHERE ${whereClause}
+       ORDER BY title, region, date_trunc('day', event_time), id DESC
+     ) deduped
+     ORDER BY event_time ASC`,
     params
   );
   return rows;

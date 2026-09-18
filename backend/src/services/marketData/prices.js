@@ -7,6 +7,7 @@
 // read that table. Nothing in this file ever fabricates a number: a class
 // with no fresh cached data is simply omitted, never padded with a sample.
 import { query } from "../../db.js";
+import { convertEtfProxyPrice, instrumentForEtfTicker } from "./instruments.js";
 
 const COINGECKO = "https://api.coingecko.com/api/v3";
 const ALPHA_VANTAGE = "https://www.alphavantage.co/query";
@@ -43,6 +44,7 @@ export async function getCryptoTicker() {
     name: c.name,
     price: formatPrice(c.current_price),
     change_percent_24h: c.price_change_percentage_24h,
+    assetClass: "crypto",
   }));
 }
 
@@ -58,6 +60,7 @@ export async function getCryptoMovers() {
     symbol: c.symbol.toUpperCase(),
     name: c.name,
     price: formatPrice(c.current_price),
+    assetClass: "crypto",
     change_percent_24h: c.price_change_percentage_24h,
   });
 
@@ -96,19 +99,30 @@ const COMMODITY_FRESHNESS_MS = 12 * 60 * 60 * 1000;
 // 30h margin over the once-daily Alpha Vantage history refresh.
 const HISTORY_FRESHNESS_MS = 30 * 60 * 60 * 1000;
 
-// Labelled "(SPY)"/"(QQQ)" for the same reason the Overview strip's
-// INDICES_SYMBOLS below is - these are ETF proxies, not the raw index.
-const EQUITY_LABELS = { spy: "S&P 500 (SPY)", qqq: "Nasdaq 100 (QQQ)" };
+// key -> the ETF ticker actually fetched (Twelve Data has no bare index
+// quote on the free tier - see refreshMarketData.js). The displayed
+// symbol/price are now the REAL index (via instruments.js's
+// convertEtfProxyPrice()), not the ETF's own share price - this used to
+// read "S&P 500 (SPY)" showing SPY's raw price, which is why an Analysis
+// article about "the S&P 500" and this ticker used to describe two
+// different numbers for what a reader would reasonably assume was the
+// same thing. instrumentForEtfTicker() supplies both the real display
+// name and the assetClass ("index") the shared formatter needs.
+const EQUITY_ETF_TICKERS = { spy: "SPY", qqq: "QQQ" };
 
 export async function getEquityTicker() {
   const items = [];
-  for (const key of Object.keys(EQUITY_LABELS)) {
+  for (const key of Object.keys(EQUITY_ETF_TICKERS)) {
     const row = await getFreshCacheRow(key, EQUITY_FRESHNESS_MS);
     if (!row) continue;
+    const ticker = EQUITY_ETF_TICKERS[key];
+    const instrument = instrumentForEtfTicker(ticker);
+    const realPrice = convertEtfProxyPrice(ticker, row.payload.price);
     items.push({
-      symbol: EQUITY_LABELS[key],
-      price: formatPrice(row.payload.price),
+      symbol: instrument.display,
+      price: formatPrice(realPrice),
       change_percent_24h: row.payload.change_percent_24h,
+      assetClass: instrument.assetClass,
     });
   }
   return items;
@@ -119,9 +133,9 @@ export async function getEquityTicker() {
 // has drifted further from a clean 1/10 over time via its expense ratio),
 // so labelling GLD's real price as plain "Gold" would show a number that
 // LOOKS as fabricated as the sample data this replaced, even though it's
-// completely real. Same honesty-via-labelling approach the Overview strip
-// already uses for its SPY/QQQ/DIA index proxies. WTI has no such mismatch
-// - Alpha Vantage's WTI series is a genuine $/barrel figure.
+// completely real. WTI has no such mismatch - Alpha Vantage's WTI series
+// is a genuine $/barrel figure, which is exactly why (unlike gold) it's
+// safe for getCommoditiesTicker() below to read this same 'wti' row too.
 const COMMODITY_LABELS = { gold: "Gold (GLD)", wti: "Oil (WTI)" };
 
 export async function getCommoditySnapshot(key) {
@@ -131,6 +145,7 @@ export async function getCommoditySnapshot(key) {
     symbol: COMMODITY_LABELS[key] || key.toUpperCase(),
     price: formatPrice(row.payload.price),
     change_percent_24h: row.payload.change_percent_24h,
+    assetClass: "commodity",
   };
 }
 
@@ -141,14 +156,24 @@ export async function getCommoditySnapshot(key) {
 // null (never a guessed/partial snapshot) if the history row is missing,
 // failed, or older than HISTORY_FRESHNESS_MS.
 const HISTORY_CACHE_KEYS = { gold: "gold_history", wti: "wti_history", spy: "spy_history" };
-const HISTORY_LABELS = { gold: "Gold (GLD)", wti: "Oil (WTI)", spy: "S&P 500 (SPY)" };
+const HISTORY_LABELS = { gold: "Gold (GLD)", wti: "Oil (WTI)", spy: "S&P 500" };
+const HISTORY_ASSET_CLASSES = { gold: "commodity", wti: "commodity", spy: "index" };
 
 export async function getCachedTechnicalSnapshot(key) {
   const cacheKey = HISTORY_CACHE_KEYS[key];
   if (!cacheKey) throw new Error(`Unknown cached snapshot key: ${key}`);
   const row = await getFreshCacheRow(cacheKey, HISTORY_FRESHNESS_MS);
   if (!row) return null;
-  return computeSnapshotFromCloses(HISTORY_LABELS[key], row.payload.closes);
+  // spy_history is raw SPY ETF closes (see refreshMarketData.js) - scaled
+  // to real S&P 500 index points here, same conversion and same reasoning
+  // as getEquityTicker() above, so the Analysis brief this feeds
+  // (buildAnalysisPrompt) describes the same number the ticker does.
+  // Multiplying every close by a constant before computing MA/support/
+  // resistance/RSI is equivalent to computing on the raw closes and then
+  // scaling the (linear) results - RSI is untouched either way, since it
+  // depends only on the ratio between up/down moves, not their scale.
+  const closes = key === "spy" ? row.payload.closes.map((c) => convertEtfProxyPrice("SPY", c)) : row.payload.closes;
+  return computeSnapshotFromCloses(HISTORY_LABELS[key], closes, HISTORY_ASSET_CLASSES[key]);
 }
 
 // --- Markets Overview strip (routes/market.js's GET /api/market/overview) ---
@@ -236,21 +261,35 @@ async function fetchGlobalQuote(symbol) {
   };
 }
 
-// CURRENCY_EXCHANGE_RATE - a live rate, but no change% field. Getting a
-// daily change would need a second FX_DAILY call per pair, which the
-// 25/day budget doesn't have room for (see overviewCache.js) - so forex
-// items always carry change_percent_24h: null, and the frontend
-// (MarketsOverview.js) renders a muted "-" for that instead of a colored
-// delta rather than fabricating one.
+// FX_DAILY - switched from CURRENCY_EXCHANGE_RATE (found during a live
+// audit: that endpoint has no change% field at all, which is why the
+// Forex column was the one panel on this strip always showing "-" instead
+// of a real 24h delta next to Indices/Commodities/Stocks/Crypto). Same
+// call count as before - still 1 Alpha Vantage call per pair, 3 total -
+// so this doesn't touch the 25/day budget math in overviewCache.js; it's
+// a different function name returning a daily series instead of a single
+// live quote, from which price/change are derived the exact same
+// latest-vs-previous-close way fetchCommoditySeries() already does below.
 async function fetchCurrencyRate(from, to) {
   const key = requireStocksApiKey();
-  const data = await throttledAlphaVantageCall(() => getJson(`${ALPHA_VANTAGE}?function=CURRENCY_EXCHANGE_RATE&from_currency=${from}&to_currency=${to}&apikey=${key}`));
-  checkAlphaVantageError(data, `CURRENCY_EXCHANGE_RATE ${from}/${to}`);
-  const rate = data["Realtime Currency Exchange Rate"];
-  if (!rate || !rate["5. Exchange Rate"]) {
-    throw new Error(`Alpha Vantage CURRENCY_EXCHANGE_RATE ${from}/${to}: unexpected response shape.`);
+  const data = await throttledAlphaVantageCall(() => getJson(`${ALPHA_VANTAGE}?function=FX_DAILY&from_symbol=${from}&to_symbol=${to}&outputsize=compact&apikey=${key}`));
+  checkAlphaVantageError(data, `FX_DAILY ${from}/${to}`);
+  const series = data["Time Series FX (Daily)"];
+  if (!series) {
+    throw new Error(`Alpha Vantage FX_DAILY ${from}/${to}: unexpected response shape.`);
   }
-  return { price: formatPrice(Number(rate["5. Exchange Rate"])), change_percent_24h: null };
+  const sorted = Object.entries(series)
+    .map(([date, entry]) => ({ date, close: Number(entry["4. close"]) }))
+    .sort((a, b) => new Date(a.date) - new Date(b.date)); // oldest first
+  if (sorted.length < 2) {
+    throw new Error(`Alpha Vantage FX_DAILY ${from}/${to}: not enough data points for a % change.`);
+  }
+  const latest = sorted[sorted.length - 1].close;
+  const previous = sorted[sorted.length - 2].close;
+  return {
+    price: formatPrice(latest),
+    change_percent_24h: ((latest - previous) / previous) * 100,
+  };
 }
 
 // WTI / BRENT / NATURAL_GAS - Alpha Vantage's confirmed commodity
@@ -298,7 +337,11 @@ async function fetchCommoditySeries(functionName) {
 // Every outcome is logged individually - this is the log to check after a
 // refresh runs, to confirm each of the ~12 Alpha Vantage calls succeeded
 // or see exactly why it didn't.
-async function fetchTickerClass(items, previousItems, fetchOne, classLabel) {
+// assetClass here is the shared-formatter class ("index"/"forex"/
+// "commodity"/"stock"), separate from classLabel (just a log tag, kept in
+// its existing plural form - "indices"/"forex"/"commodities"/"stocks" -
+// so existing log lines don't change).
+async function fetchTickerClass(items, previousItems, fetchOne, classLabel, assetClass) {
   if (!process.env.STOCKS_DATA_API_KEY) return [];
 
   const settled = await Promise.allSettled(items.map((item) => fetchOne(item)));
@@ -309,7 +352,7 @@ async function fetchTickerClass(items, previousItems, fetchOne, classLabel) {
       console.log(
         `Markets overview (${classLabel}): ${item.symbol} OK - price=${result.value.price} change_percent_24h=${result.value.change_percent_24h}`
       );
-      return { symbol: item.symbol, name: item.name, ...result.value, fetched_at: new Date().toISOString() };
+      return { symbol: item.symbol, name: item.name, ...result.value, assetClass, fetched_at: new Date().toISOString() };
     }
 
     const reason = result.reason?.message || String(result.reason);
@@ -327,16 +370,45 @@ async function fetchTickerClass(items, previousItems, fetchOne, classLabel) {
   return results.filter(Boolean);
 }
 
-// ETF proxies - Alpha Vantage has no native index quote. Labelled
-// "(SPY)"/"(QQQ)"/"(DIA)" so it's honest about being a proxy, not the raw
-// index value.
+// Alpha Vantage has no native index quote, so this still fetches SPY/QQQ/
+// DIA under the hood - but symbol/name/price below are the REAL
+// instrument's, converted via instruments.js's convertEtfProxyPrice(), not
+// the ETF's own. Showing "SPY" next to a number that's now real index
+// points (not SPY's own share price) would just be a new, different
+// mismatch - this used to label these honestly as "(SPY)"/"(QQQ)"/"(DIA)"
+// precisely because the price WAS the ETF's; now that it isn't, the label
+// changed to match. `symbol` uses the TradingView-style short form
+// (tvSymbol) rather than the longer display name, to fit the same compact
+// badge the raw ETF tickers used to sit in.
+//
+// cacheKey points at the SAME market_data_cache row getEquityTicker()
+// (the header ticker) reads - this used to run its own independent Alpha
+// Vantage GLOBAL_QUOTE call per symbol instead, which could (and in
+// practice did) disagree with the ticker's Twelve Data figure for the
+// exact same real ETF by a few dollars - magnified into a much more
+// visible gap once both are converted to index points. One real quote
+// per index now, read twice, not fetched twice.
 const INDICES_SYMBOLS = [
-  { symbol: "SPY", name: "S&P 500 (SPY)" },
-  { symbol: "QQQ", name: "Nasdaq 100 (QQQ)" },
-  { symbol: "DIA", name: "Dow Jones (DIA)" },
+  { symbol: "SPX", name: "S&P 500", etfTicker: "SPY", cacheKey: "spy" },
+  { symbol: "NDQ", name: "Nasdaq", etfTicker: "QQQ", cacheKey: "qqq" },
+  { symbol: "DJI", name: "Dow Jones", etfTicker: "DIA", cacheKey: "dia" },
 ];
 export async function getIndicesTicker(previousItems = []) {
-  return fetchTickerClass(INDICES_SYMBOLS, previousItems, (item) => fetchGlobalQuote(item.symbol), "indices");
+  return fetchTickerClass(
+    INDICES_SYMBOLS,
+    previousItems,
+    async (item) => {
+      const row = await getFreshCacheRow(item.cacheKey, EQUITY_FRESHNESS_MS);
+      if (!row) throw new Error(`No fresh cached ${item.etfTicker} quote (market_data_cache).`);
+      // formatPrice() here, same as getEquityTicker() above - without it
+      // this and the ticker can round a repeating-decimal conversion
+      // result (e.g. 612.15 * 41) a hair differently at display time and
+      // show a different last digit for what's actually the same number.
+      return { price: formatPrice(convertEtfProxyPrice(item.etfTicker, row.payload.price)), change_percent_24h: row.payload.change_percent_24h };
+    },
+    "indices",
+    "index"
+  );
 }
 
 const FOREX_PAIRS = [
@@ -345,18 +417,37 @@ const FOREX_PAIRS = [
   { symbol: "USD/JPY", name: "US Dollar / Japanese Yen", from: "USD", to: "JPY" },
 ];
 export async function getForexTicker(previousItems = []) {
-  return fetchTickerClass(FOREX_PAIRS, previousItems, (item) => fetchCurrencyRate(item.from, item.to), "forex");
+  return fetchTickerClass(FOREX_PAIRS, previousItems, (item) => fetchCurrencyRate(item.from, item.to), "forex", "forex");
 }
 
 // WTI + Brent + Natural Gas fill all 3 commodity slots - see
 // fetchCommoditySeries()'s comment above for why gold/silver aren't here.
+// WTI is the one of these three the header ticker also shows
+// (getCommoditySnapshot('wti')) - fetchOne below reads that SAME
+// market_data_cache 'wti' row instead of making its own separate Alpha
+// Vantage call, so the two widgets can never disagree on oil's price the
+// way they used to for the indices. Brent/Natural Gas have no ticker
+// equivalent, so they're still fetched live here - nothing to unify.
 const COMMODITIES_FUNCTIONS = [
-  { symbol: "WTI", name: "Crude Oil (WTI)", functionName: "WTI" },
+  { symbol: "WTI", name: "Crude Oil (WTI)", cacheKey: "wti" },
   { symbol: "BRENT", name: "Crude Oil (Brent)", functionName: "BRENT" },
   { symbol: "NATURAL_GAS", name: "Natural Gas", functionName: "NATURAL_GAS" },
 ];
 export async function getCommoditiesTicker(previousItems = []) {
-  return fetchTickerClass(COMMODITIES_FUNCTIONS, previousItems, (item) => fetchCommoditySeries(item.functionName), "commodities");
+  return fetchTickerClass(
+    COMMODITIES_FUNCTIONS,
+    previousItems,
+    async (item) => {
+      if (item.cacheKey) {
+        const row = await getFreshCacheRow(item.cacheKey, COMMODITY_FRESHNESS_MS);
+        if (!row) throw new Error(`No fresh cached ${item.symbol} quote (market_data_cache).`);
+        return { price: row.payload.price, change_percent_24h: row.payload.change_percent_24h };
+      }
+      return fetchCommoditySeries(item.functionName);
+    },
+    "commodities",
+    "commodity"
+  );
 }
 
 // Individual equities - distinct from getIndicesTicker() above (ETF
@@ -368,7 +459,7 @@ const STOCKS_OVERVIEW_SYMBOLS = [
   { symbol: "MSFT", name: "Microsoft Corp." },
 ];
 export async function getStocksOverviewTicker(previousItems = []) {
-  return fetchTickerClass(STOCKS_OVERVIEW_SYMBOLS, previousItems, (item) => fetchGlobalQuote(item.symbol), "stocks");
+  return fetchTickerClass(STOCKS_OVERVIEW_SYMBOLS, previousItems, (item) => fetchGlobalQuote(item.symbol), "stocks", "stock");
 }
 
 // --- Simple technical analysis, computed from real price history ---
@@ -409,7 +500,7 @@ export function relativeStrengthIndex(values, period = 14) {
 // Shared by getMarketSnapshot() (crypto, below) and getCachedTechnicalSnapshot()
 // (gold/WTI/SPY, above) so both produce the exact same shape from an
 // ascending closes array.
-function computeSnapshotFromCloses(symbol, closes) {
+function computeSnapshotFromCloses(symbol, closes, assetClass) {
   const ma50 = simpleMovingAverage(closes, Math.min(50, closes.length));
   const rsi14 = relativeStrengthIndex(closes, 14);
   const currentPrice = closes[closes.length - 1];
@@ -421,13 +512,18 @@ function computeSnapshotFromCloses(symbol, closes) {
     symbol,
     // Rounded once, here, via the shared helper - every consumer (the
     // Analysis prompt, the mock provider, the frontend widget) reads this
-    // already-clean number instead of needing its own rounding logic.
+    // already-clean number instead of needing its own rounding logic. Kept
+    // as a plain number (not run through formatMarketValue) so this stays
+    // a valid JSON API response for a programmatic consumer - display
+    // formatting (the $, the comma grouping) happens at the point this
+    // gets embedded into human-readable text (buildAnalysisPrompt).
     price: formatPrice(currentPrice),
     trend: ma50 && currentPrice > ma50 ? "Bullish" : "Bearish",
     rsi_14: rsi14,
     rsi_note: rsi14 >= 70 ? "Overbought zone" : rsi14 <= 30 ? "Oversold zone" : "Neutral zone",
     support: formatPrice(support),
     resistance: formatPrice(resistance),
+    assetClass,
     disclaimer: "For informational purposes only - not financial advice.",
   };
 }
@@ -439,7 +535,7 @@ export async function getMarketSnapshot(coinId = "bitcoin") {
     `${COINGECKO}/coins/${coinId}/market_chart?vs_currency=usd&days=60&interval=daily`
   );
   const closes = history.prices.map(([, price]) => price);
-  return computeSnapshotFromCloses(coinId === "bitcoin" ? "BTC/USD" : coinId, closes);
+  return computeSnapshotFromCloses(coinId === "bitcoin" ? "BTC/USD" : coinId, closes, "crypto");
 }
 
 function requireStocksApiKey() {

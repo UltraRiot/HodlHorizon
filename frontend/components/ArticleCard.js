@@ -14,12 +14,6 @@ export default function ArticleCard({ article }) {
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
         <span className={`chip chip-${article.category_slug}`}>{article.category_name}</span>
         <span style={{ color: "var(--text-mute)", fontSize: 13 }}>{article.time_ago}</span>
-        <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 5, color: "var(--text-mute)", fontSize: 11.5 }}>
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
-            <path d="M12 3L14 9L20 11L14 13L12 19L10 13L4 11L10 9L12 3Z" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
-          </svg>
-          AI Summary
-        </span>
       </div>
 
       <Link href={`/article/${article.slug}`}>

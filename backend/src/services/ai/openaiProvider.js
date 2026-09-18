@@ -71,9 +71,9 @@ export async function openaiGenerateArticle(items, previousCoverage, correctionN
   return { ...parsed, tokensEstimate, costEstimateUsd };
 }
 
-export async function openaiGenerateAnalysis(snapshot, correctionNote) {
+export async function openaiGenerateAnalysis(snapshot, correctionNote, context) {
   const { parsed, tokensEstimate, costEstimateUsd } = await callOpenAi(
-    buildAnalysisPrompt(snapshot, correctionNote),
+    buildAnalysisPrompt(snapshot, correctionNote, context),
     ARTICLE_FIELDS,
     "analysis"
   );

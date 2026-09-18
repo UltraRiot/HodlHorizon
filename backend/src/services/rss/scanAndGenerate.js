@@ -17,7 +17,8 @@ import { query } from "../../db.js";
 import { fetchSourceItemsForCategory, fetchDualStocksIndicesItems } from "./fetchSources.js";
 import { groupSimilarItems } from "./grouping.js";
 import { generateArticle } from "../ai/provider.js";
-import { getCryptoTicker } from "../marketData/prices.js";
+import { getCryptoTicker, getCommoditySnapshot, getEquityTicker } from "../marketData/prices.js";
+import { formatMarketValue } from "../marketData/formatMarketValue.js";
 import { sendScheduledArticleAlert } from "../notifications/mailer.js";
 import {
   getSetting,
@@ -200,10 +201,180 @@ export function findPriceMismatch(mentions, tickerBySymbol) {
     if (!live) continue;
     const diff = Math.abs(value - live) / live;
     if (diff > PRICE_MISMATCH_THRESHOLD) {
-      // Pinned to en-US regardless of server locale, so the note always
-      // reads "$32,000" rather than a locale-dependent "$32 000"/"$32.000".
-      return `Stated price $${value.toLocaleString("en-US")} differs significantly from current market price $${live.toLocaleString("en-US")} for ${symbol} (${Math.round(diff * 100)}% off) - verify before publishing.`;
+      // formatMarketValue instead of a hand-rolled toLocaleString call, so
+      // this note is formatted the exact same way as every other price on
+      // the site - see backend/src/services/marketData/formatMarketValue.js.
+      return `Stated price ${formatMarketValue(value, "crypto")} differs significantly from current market price ${formatMarketValue(live, "crypto")} for ${symbol} (${Math.round(diff * 100)}% off) - verify before publishing.`;
     }
+  }
+  return null;
+}
+
+// Same hallucination risk as crypto (the model has no live price feed, so
+// a specific figure is either lifted from the source text or invented),
+// extended to Gold/Oil - caught live on "Gold Prices Fluctuate Like Meme
+// Coins After Fed Decision" stating gold "around $1,850" while spot gold
+// was actually near $4,370 that day. Oil's cached price (Alpha Vantage
+// WTI, via getCommoditySnapshot()) is a genuine $/barrel figure, so it can
+// be diffed directly like crypto. Gold's only cached price is GLD's ETF
+// share price - COMMODITY_LABELS's comment in services/marketData/
+// prices.js explains it's roughly a tenth of spot gold and drifts further
+// over time, so diffing a stated spot-gold figure against it would be
+// comparing two different things and would misfire constantly. Gold
+// mentions are instead checked against the actual source material the
+// model was given (the same headlines/snippets from buildArticlePrompt) -
+// if the number doesn't appear there either, there's nothing real behind
+// it. Oil falls back to the same source-text check on any scan where its
+// cached price is unavailable.
+const COMMODITY_MENTION_PATTERNS = {
+  GOLD: /\b(gold|xau)\b/i,
+  OIL: /\b(oil|wti|crude)\b/i,
+};
+
+export function extractCommodityPriceMentions(text) {
+  const sentences = (text || "").split(/(?<=[.!?])\s+/);
+  const mentions = [];
+  for (const sentence of sentences) {
+    for (const [symbol, re] of Object.entries(COMMODITY_MENTION_PATTERNS)) {
+      if (!re.test(sentence)) continue;
+      for (const match of sentence.matchAll(DOLLAR_AMOUNT_RE)) {
+        const value = Number(match[1].replace(/,/g, ""));
+        if (Number.isFinite(value)) mentions.push({ symbol, value });
+      }
+    }
+  }
+  return mentions;
+}
+
+// A handful of common ways a source snippet might render the same number
+// ($1,850 / $1850 / $1850.00 / a bare 1850) rather than requiring an exact
+// string match against the dollar-formatted figure the model produced.
+function priceAppearsInText(value, text) {
+  if (!text) return false;
+  const candidates = new Set([
+    value.toLocaleString("en-US"),
+    String(value),
+    Math.round(value).toLocaleString("en-US"),
+    String(Math.round(value)),
+  ]);
+  return [...candidates].some((c) => text.includes(c));
+}
+
+// tickerBySymbol here only ever has an OIL entry (see the comment above on
+// why GOLD is deliberately left out) - a GOLD mention always falls through
+// to the source-text check, which is the point, not a bug.
+export function findCommodityPriceMismatch(mentions, tickerBySymbol, sourceText) {
+  for (const { symbol, value } of mentions) {
+    const live = tickerBySymbol[symbol];
+    if (live) {
+      const diff = Math.abs(value - live) / live;
+      if (diff <= PRICE_MISMATCH_THRESHOLD) continue;
+    }
+    if (priceAppearsInText(value, sourceText)) continue;
+    const liveNote = live ? ` (current cached ${symbol} price: ${formatMarketValue(live, "commodity")})` : "";
+    return `Stated price ${formatMarketValue(value, "commodity")} for ${symbol} does not match the current cached price${liveNote} and was not found in the source material - likely fabricated, verify before publishing.`;
+  }
+  return null;
+}
+
+// Same idea, extended to Indices - the S&P 500/Nasdaq figures a Stocks/
+// Indices-category article states. Unlike Gold, this one DOES have a
+// trustworthy live number to diff against: getEquityTicker() now returns
+// real converted index points (see instruments.js's etfProxy conversion),
+// not SPY/QQQ's own share price, so a direct comparison is meaningful
+// here in a way it deliberately isn't for GLD-vs-spot-gold. The
+// source-text fallback still applies too, for the same reason it does for
+// crypto/commodities: it costs nothing extra and catches a fabricated
+// number that happens to slip inside the tolerance band.
+const INDEX_MENTION_PATTERNS = {
+  SP500: /\b(s&p\s?500|s&p)\b/i,
+  NASDAQ: /\bnasdaq(-|\s)?100\b|\bnasdaq\b/i,
+};
+
+// Indices are quoted in bare points, not dollars, so unlike
+// DOLLAR_AMOUNT_RE this doesn't require a "$" - but to avoid matching an
+// unrelated small number in the same sentence (a year, an RSI reading, a
+// percentage), it requires comma-grouped thousands (real index levels are
+// always 4+ digits and this site's own style always comma-formats a
+// number that size - see STYLE_INSTRUCTIONS in ai/prompts.js) which a
+// plain year or day-count is never written with.
+const INDEX_AMOUNT_RE = /\$?\s?([0-9]{1,3}(?:,[0-9]{3})+(?:\.[0-9]+)?)/g;
+
+export function extractIndexPriceMentions(text) {
+  const sentences = (text || "").split(/(?<=[.!?])\s+/);
+  const mentions = [];
+  for (const sentence of sentences) {
+    for (const [symbol, re] of Object.entries(INDEX_MENTION_PATTERNS)) {
+      if (!re.test(sentence)) continue;
+      for (const match of sentence.matchAll(INDEX_AMOUNT_RE)) {
+        const value = Number(match[1].replace(/,/g, ""));
+        if (Number.isFinite(value)) mentions.push({ symbol, value });
+      }
+    }
+  }
+  return mentions;
+}
+
+export function findIndexPriceMismatch(mentions, tickerBySymbol, sourceText) {
+  for (const { symbol, value } of mentions) {
+    const live = tickerBySymbol[symbol];
+    if (live) {
+      const diff = Math.abs(value - live) / live;
+      if (diff <= PRICE_MISMATCH_THRESHOLD) continue;
+    }
+    if (priceAppearsInText(value, sourceText)) continue;
+    const liveNote = live ? ` (current cached ${symbol} level: ${formatMarketValue(live, "index")})` : "";
+    return `Stated level ${formatMarketValue(value, "index")} for ${symbol} does not match the current cached level${liveNote} and was not found in the source material - likely fabricated, verify before publishing.`;
+  }
+  return null;
+}
+
+// Generalizes the price-mismatch principle to a different class of
+// "specific, checkable number": a stated price-movement percentage. No
+// asset symbol required (unlike the price checks above) - a category-
+// agnostic movement verb nearby is the signal instead, since a percentage
+// alone is far too generic a pattern to safely extract without one (an
+// ownership stake, an RSI reading, a probability, and a genuine price move
+// all look identical as a bare "N%"). There's also no live "today's %
+// change for this exact claim" to diff against in general the way a price
+// has a live ticker - a stated percentage could describe a day's move, a
+// week's, a company's revenue growth, anything - so like gold, this is
+// checked against source text only.
+const PRICE_MOVEMENT_VERBS_RE = /\b(rose|rise|rising|risen|fell|fall|falling|fallen|gained|gain|gaining|dropped|drop|dropping|surged|surge|surging|plunged|plunge|plunging|climbed|climb|climbing|slipped|slip|slipping|jumped|jump|jumping|declined|decline|declining|advanced|advance|advancing|slid|slide|sliding|tumbled|tumble|tumbling)\b/i;
+const PERCENT_RE = /(\d+(?:\.\d+)?)\s?%/g;
+
+export function extractPercentMentions(text) {
+  const sentences = (text || "").split(/(?<=[.!?])\s+/);
+  const mentions = [];
+  for (const sentence of sentences) {
+    if (!PRICE_MOVEMENT_VERBS_RE.test(sentence)) continue;
+    for (const match of sentence.matchAll(PERCENT_RE)) {
+      const value = Number(match[1]);
+      if (Number.isFinite(value)) mentions.push(value);
+    }
+  }
+  return mentions;
+}
+
+// Deliberately NOT priceAppearsInText() - that one's rounded-to-integer
+// fallback candidate (e.g. "4" for a stated 4.2%) is fine for a dollar
+// price (a bare "$4" match is already a distinctive, rare string in
+// running prose) but far too loose for a percentage, where a bare digit
+// like "4" is nearly guaranteed to coincidentally appear somewhere in any
+// non-trivial source text (a date, a source count, an unrelated figure) -
+// that would make this check pass almost anything. Requiring the number
+// to actually sit next to a "%" or "percent" in the source is a real
+// verification instead.
+function percentAppearsInText(value, text) {
+  if (!text) return false;
+  const candidates = [value.toFixed(1), String(value), String(Math.round(value))];
+  return candidates.some((c) => new RegExp(`${c}\\s?(%|percent)`, "i").test(text));
+}
+
+export function findPercentMismatch(mentions, sourceText) {
+  for (const value of mentions) {
+    if (percentAppearsInText(value, sourceText)) continue;
+    return `Stated move of ${value}% was not found in the source material - likely fabricated, verify before publishing.`;
   }
   return null;
 }
@@ -301,6 +472,36 @@ export async function runScanAndGenerate() {
       cryptoTickerBySymbol = Object.fromEntries(ticker.map((t) => [t.symbol, t.price]));
     } catch (err) {
       console.error(`AI engine: could not fetch live crypto prices for the price-plausibility check - ${err.message}. Skipping that check for this scan.`);
+    }
+  }
+
+  // Same idea for Commodities, but GOLD is deliberately never added here -
+  // see the comment on findCommodityPriceMismatch() above for why its only
+  // cached price (the GLD ETF) isn't a valid number to diff a stated
+  // spot-gold figure against.
+  let commodityTickerBySymbol = {};
+  if (categories.some((c) => c.slug === "commodities")) {
+    try {
+      const wti = await getCommoditySnapshot("wti");
+      if (wti) commodityTickerBySymbol.OIL = wti.price;
+    } catch (err) {
+      console.error(`AI engine: could not fetch the cached WTI price for the price-plausibility check - ${err.message}. Gold/Oil mentions will only be checked against source material this scan.`);
+    }
+  }
+
+  // Real converted index points (not SPY/QQQ's own ETF price) for the
+  // Indices price-plausibility check below - see getEquityTicker() and
+  // instruments.js's etfProxy conversion.
+  let indexTickerBySymbol = {};
+  if (categories.some((c) => c.slug === "indices")) {
+    try {
+      const equity = await getEquityTicker();
+      for (const item of equity) {
+        if (item.symbol === "S&P 500") indexTickerBySymbol.SP500 = item.price;
+        else if (item.symbol === "Nasdaq") indexTickerBySymbol.NASDAQ = item.price;
+      }
+    } catch (err) {
+      console.error(`AI engine: could not fetch live index levels for the price-plausibility check - ${err.message}. Skipping that check for this scan.`);
     }
   }
 
@@ -426,6 +627,46 @@ export async function runScanAndGenerate() {
       if (category.slug === "crypto") {
         const mentions = extractCryptoPriceMentions(`${draft.title} ${draft.dek} ${draft.body}`);
         const note = findPriceMismatch(mentions, cryptoTickerBySymbol);
+        if (note) {
+          priceMismatch = true;
+          priceMismatchNote = note;
+          console.warn(`AI engine: price mismatch - "${draft.title}" ${priceMismatchNote}`);
+          totals.priceMismatch += 1;
+        }
+      } else if (category.slug === "commodities") {
+        const mentions = extractCommodityPriceMentions(`${draft.title} ${draft.dek} ${draft.body}`);
+        const sourceText = group.map((i) => `${i.title} ${i.contentSnippet || ""}`).join(" ");
+        const note = findCommodityPriceMismatch(mentions, commodityTickerBySymbol, sourceText);
+        if (note) {
+          priceMismatch = true;
+          priceMismatchNote = note;
+          console.warn(`AI engine: price mismatch - "${draft.title}" ${priceMismatchNote}`);
+          totals.priceMismatch += 1;
+        }
+      } else if (category.slug === "indices") {
+        const mentions = extractIndexPriceMentions(`${draft.title} ${draft.dek} ${draft.body}`);
+        const sourceText = group.map((i) => `${i.title} ${i.contentSnippet || ""}`).join(" ");
+        const note = findIndexPriceMismatch(mentions, indexTickerBySymbol, sourceText);
+        if (note) {
+          priceMismatch = true;
+          priceMismatchNote = note;
+          console.warn(`AI engine: price mismatch - "${draft.title}" ${priceMismatchNote}`);
+          totals.priceMismatch += 1;
+        }
+      }
+
+      // Generalizes the same guardrail principle to a stated price-MOVEMENT
+      // percentage ("rose 4.2%," "fell 12%") - checked the same way Gold's
+      // price is (source-text only; there's no live "today's % change for
+      // this exact claim" to diff against in general, since a percentage
+      // could describe anything). Runs for every category, on top of
+      // whatever asset-specific check just ran above, since a fabricated
+      // percentage is the same hallucination risk in Stocks/Indices copy
+      // as it is in Crypto/Commodities.
+      if (!priceMismatch) {
+        const percentMentions = extractPercentMentions(`${draft.title} ${draft.dek} ${draft.body}`);
+        const sourceText = group.map((i) => `${i.title} ${i.contentSnippet || ""}`).join(" ");
+        const note = findPercentMismatch(percentMentions, sourceText);
         if (note) {
           priceMismatch = true;
           priceMismatchNote = note;

@@ -14,6 +14,7 @@ export function isMarketDataDryRun() {
 export const DRY_RUN_TWELVE_DATA_QUOTES = {
   SPY: { close: "758.42", percent_change: "0.34" },
   QQQ: { close: "612.15", percent_change: "-0.21" },
+  DIA: { close: "518.35", percent_change: "0.60" },
 };
 
 export const DRY_RUN_GOLD_QUOTE_BODY = {

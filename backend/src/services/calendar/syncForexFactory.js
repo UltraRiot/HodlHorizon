@@ -115,13 +115,41 @@ export async function syncForexFactoryCalendar() {
       impactsSeen.add(impact);
 
       try {
-        await query(
-          `INSERT INTO calendar_events (title, event_time, impact, category, region, source, forecast, previous)
-           VALUES ($1, $2, $3, 'macro', $4, 'forexfactory', $5, $6)
-           ON CONFLICT (title, event_time)
-           DO UPDATE SET impact = EXCLUDED.impact, region = EXCLUDED.region, forecast = EXCLUDED.forecast, previous = EXCLUDED.previous`,
-          [entry.title.trim(), eventTime, impact, region, entry.forecast || null, entry.previous || null]
+        // The ON CONFLICT below only catches an exact-to-the-minute
+        // event_time repeat. In practice ForexFactory itself nudges an
+        // event's reported time by a few minutes between fetches (a bond
+        // auction's "provisional" time getting refined to its exact
+        // completion time, for example) - found live as duplicate rows
+        // for the same title+region a handful of minutes apart (e.g. two
+        // "BOJ Policy Rate" rows 24 minutes apart on the same sync day).
+        // Reconciling against any existing same title+region row within a
+        // few hours - reusing its id via an UPDATE rather than inserting
+        // a fresh row - closes that gap while still leaving two
+        // genuinely different occurrences of a recurring title (weeks
+        // apart) untouched.
+        const { rows: nearbyRows } = await query(
+          `SELECT id FROM calendar_events
+           WHERE source = 'forexfactory' AND title = $1 AND region = $2
+             AND event_time BETWEEN $3::timestamptz - interval '6 hours' AND $3::timestamptz + interval '6 hours'
+           ORDER BY event_time ASC LIMIT 1`,
+          [entry.title.trim(), region, eventTime]
         );
+
+        if (nearbyRows.length > 0) {
+          await query(
+            `UPDATE calendar_events SET event_time = $2, impact = $3, forecast = $4, previous = $5
+             WHERE id = $1`,
+            [nearbyRows[0].id, eventTime, impact, entry.forecast || null, entry.previous || null]
+          );
+        } else {
+          await query(
+            `INSERT INTO calendar_events (title, event_time, impact, category, region, source, forecast, previous)
+             VALUES ($1, $2, $3, 'macro', $4, 'forexfactory', $5, $6)
+             ON CONFLICT (title, event_time)
+             DO UPDATE SET impact = EXCLUDED.impact, region = EXCLUDED.region, forecast = EXCLUDED.forecast, previous = EXCLUDED.previous`,
+            [entry.title.trim(), eventTime, impact, region, entry.forecast || null, entry.previous || null]
+          );
+        }
         result.processed += 1;
       } catch (err) {
         console.error(`Calendar sync: could not upsert "${entry.title}" - ${err.message}`);

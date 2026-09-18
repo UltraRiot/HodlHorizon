@@ -10,12 +10,19 @@
 // 60s lazy cache, unchanged.
 //
 // RATE-LIMIT BUDGET (worked out explicitly, not guessed):
-//   indices:     3 GLOBAL_QUOTE calls           (SPY, QQQ, DIA)
+//   indices:     0 calls - SPY/QQQ/DIA now read the same market_data_cache
+//                row the header ticker's Twelve Data refresh populates
+//                (see getIndicesTicker() in prices.js) instead of each
+//                fetching its own Alpha Vantage GLOBAL_QUOTE, which used to
+//                let this panel and the ticker disagree on the same ETF's
+//                price by a few real dollars.
 //   forex:       3 CURRENCY_EXCHANGE_RATE calls (EUR/USD, GBP/USD, USD/JPY)
-//   commodities: 3 time-series calls             (WTI, BRENT, NATURAL_GAS)
+//   commodities: 2 time-series calls (BRENT, NATURAL_GAS) - WTI is also
+//                unified now, reading the header ticker's cached 'wti' row
+//                instead of its own call (getCommoditiesTicker() in prices.js).
 //   stocks:      3 GLOBAL_QUOTE calls            (AAPL, NVDA, MSFT)
-//   = 12 Alpha Vantage calls per refresh, exactly. At most once per
-//   REFRESH_INTERVAL_MS (24h, see below) = 12 calls/day, comfortably under
+//   = 8 Alpha Vantage calls per refresh. At most once per
+//   REFRESH_INTERVAL_MS (24h, see below) = 8 calls/day, comfortably under
 //   the ~20/day target with headroom to spare.
 const REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
@@ -108,7 +115,11 @@ async function persistCache() {
 // failure reason) - that's the log to check after this runs.
 export async function refreshOverviewCache() {
   const categories = Object.keys(CATEGORY_LOADERS);
-  console.log(`Markets overview: starting refresh (${categories.length} categories, 3 Alpha Vantage calls each = 12 total)...`);
+  // 8 Alpha Vantage calls now, not 12 - indices (all 3) and WTI within
+  // commodities read their shared market_data_cache row instead of making
+  // their own call (see getIndicesTicker()/getCommoditiesTicker() in
+  // prices.js), leaving only forex (3) + Brent/Natural Gas (2) + stocks (3).
+  console.log(`Markets overview: starting refresh (${categories.length} categories, 8 Alpha Vantage calls total)...`);
 
   const settled = await Promise.allSettled(
     categories.map((label) => CATEGORY_LOADERS[label](cache[label]))

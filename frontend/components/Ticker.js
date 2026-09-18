@@ -1,9 +1,9 @@
-import { formatPrice } from "../lib/formatPrice";
+import { formatMarketValue } from "../lib/formatMarketValue";
 
 export default function Ticker({ crypto = [], stocks = [] }) {
   const items = [
-    ...crypto.map((c) => ({ symbol: c.symbol, price: c.price, change: c.change_percent_24h })),
-    ...stocks.map((s) => ({ symbol: s.symbol, price: s.price, change: s.change_percent_24h })),
+    ...crypto.map((c) => ({ symbol: c.symbol, price: c.price, change: c.change_percent_24h, assetClass: c.assetClass })),
+    ...stocks.map((s) => ({ symbol: s.symbol, price: s.price, change: s.change_percent_24h, assetClass: s.assetClass })),
   ];
 
   if (items.length === 0) return null;
@@ -23,7 +23,7 @@ export default function Ticker({ crypto = [], stocks = [] }) {
       {items.map((item) => (
         <div key={item.symbol} style={{ display: "flex", gap: 8, alignItems: "baseline", fontSize: 13, whiteSpace: "nowrap" }}>
           <span style={{ fontWeight: 700 }}>{item.symbol}</span>
-          <span style={{ color: "var(--text-dim)" }}>{formatPrice(item.price)}</span>
+          <span style={{ color: "var(--text-dim)" }}>{formatMarketValue(item.price, item.assetClass)}</span>
           <span className={item.change >= 0 ? "up" : "down"}>
             {item.change >= 0 ? "▲" : "▼"} {Math.abs(item.change || 0).toFixed(1)}%
           </span>

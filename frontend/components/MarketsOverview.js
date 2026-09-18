@@ -1,4 +1,4 @@
-import { formatPrice } from "../lib/formatPrice";
+import { formatMarketValue } from "../lib/formatMarketValue";
 
 // One column per asset class, in display order. tagVar points at the CSS
 // custom property (globals.css :root) used for that column's 2px accent
@@ -74,11 +74,14 @@ function MarketColumn({ label, tagVar, items }) {
           }
         >
           <span className="markets-overview-symbol">{item.symbol}</span>
-          <span className="markets-overview-price">{formatPrice(item.price)}</span>
+          <span className="markets-overview-price">{formatMarketValue(item.price, item.assetClass)}</span>
           {item.change_percent_24h == null ? (
-            // Forex is rate-only (no change% - a daily-change call per pair
-            // isn't in the Alpha Vantage budget, see fetchCurrencyRate() in
-            // prices.js) - a muted dash instead of a fabricated delta.
+            // Forex used to always land here (fetchCurrencyRate() used an
+            // Alpha Vantage endpoint with no change% field at all) - fixed
+            // to compute a real one from FX_DAILY, so this branch is now
+            // just the general "no data yet" case every asset class already
+            // shares, not forex-specific - a muted dash instead of a
+            // fabricated delta.
             <span style={{ color: "var(--text-mute)" }}>—</span>
           ) : (
             <span className={item.change_percent_24h >= 0 ? "up" : "down"}>

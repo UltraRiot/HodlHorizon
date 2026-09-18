@@ -4,6 +4,8 @@
 // before you spend any OpenAI/Anthropic credit. Swap AI_PROVIDER in .env
 // to "openai" or "anthropic" when you're ready for real writing.
 
+import { formatMarketValue } from "../marketData/formatMarketValue.js";
+
 function shortDek(items) {
   return `${items.length} source${items.length > 1 ? "s" : ""} are reporting on this story. Add a real AI provider in .env to generate an actual summary here.`;
 }
@@ -37,10 +39,13 @@ export function mockGenerateArticle(items, previousCoverage, correctionNote, ass
 }
 
 export function mockGenerateAnalysis(snapshot) {
+  const price = formatMarketValue(snapshot.price, snapshot.assetClass);
+  const support = formatMarketValue(snapshot.support, snapshot.assetClass);
+  const resistance = formatMarketValue(snapshot.resistance, snapshot.assetClass);
   const body = [
-    `[Mock draft] ${snapshot.symbol} is trading at $${snapshot.price}, in a ${snapshot.trend} trend.`,
+    `[Mock draft] ${snapshot.symbol} is trading at ${price}, in a ${snapshot.trend} trend.`,
     `RSI (14-day) reads ${snapshot.rsi_14}, which is in the ${snapshot.rsi_note.toLowerCase()}.`,
-    `Support sits near $${snapshot.support} and resistance near $${snapshot.resistance}. Set AI_PROVIDER=openai or AI_PROVIDER=anthropic in backend/.env to have this narrated as a real analysis brief.`,
+    `Support sits near ${support} and resistance near ${resistance}. Set AI_PROVIDER=openai or AI_PROVIDER=anthropic in backend/.env to have this narrated as a real analysis brief.`,
   ].join("\n\n");
 
   return {
@@ -48,7 +53,7 @@ export function mockGenerateAnalysis(snapshot) {
     dek: `A quick technical read on ${snapshot.symbol}: ${snapshot.trend.toLowerCase()} trend, RSI ${snapshot.rsi_14}.`,
     body,
     seo_title: `${snapshot.symbol} technical analysis`.slice(0, 60),
-    seo_description: `${snapshot.symbol} is ${snapshot.trend.toLowerCase()}, RSI ${snapshot.rsi_14}, support $${snapshot.support}, resistance $${snapshot.resistance}.`.slice(0, 160),
+    seo_description: `${snapshot.symbol} is ${snapshot.trend.toLowerCase()}, RSI ${snapshot.rsi_14}, support ${support}, resistance ${resistance}.`.slice(0, 160),
     tokensEstimate: 0,
     costEstimateUsd: 0,
   };

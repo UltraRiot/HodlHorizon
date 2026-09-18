@@ -61,12 +61,21 @@ export async function refreshEquityQuotes() {
   // entirely" rule below - the whole point is exercising this pipeline
   // without needing a real key at all. See twelveData.js's fetchQuoteBody().
   if (!isMarketDataDryRun() && !process.env.TWELVEDATA_API_KEY) {
-    console.log("Market data: TWELVEDATA_API_KEY is not set, skipping equity quote refresh (SPY, QQQ).");
+    console.log("Market data: TWELVEDATA_API_KEY is not set, skipping equity quote refresh (SPY, QQQ, DIA).");
     return;
   }
-  console.log("Market data: refreshing equity quotes (SPY, QQQ) from Twelve Data...");
+  // DIA added alongside the Markets Overview strip's indices unification
+  // (see getIndicesTicker() in prices.js) - it used to come from a second,
+  // independent Alpha Vantage GLOBAL_QUOTE call made only by the Overview
+  // strip, which could (and did) disagree with the header ticker's
+  // Twelve Data SPY/QQQ figures for the same real ETFs. Fetching it here
+  // too means every index the site shows has exactly one real quote
+  // behind it - still just 3 Twelve Data credits/day added (72/day at
+  // this hourly cadence), nowhere close to the 800/day free-tier ceiling.
+  console.log("Market data: refreshing equity quotes (SPY, QQQ, DIA) from Twelve Data...");
   await fetchAndCache("spy", "SPY quote (Twelve Data)", () => getTwelveDataQuote("SPY"));
   await fetchAndCache("qqq", "QQQ quote (Twelve Data)", () => getTwelveDataQuote("QQQ"));
+  await fetchAndCache("dia", "DIA quote (Twelve Data)", () => getTwelveDataQuote("DIA"));
 }
 
 export async function refreshCommodityQuotes() {

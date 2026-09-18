@@ -8,6 +8,7 @@
 // output - hard rules and the few-shot examples at the bottom of
 // buildArticlePrompt do.
 import { instrumentReferenceText } from "../marketData/instruments.js";
+import { formatMarketValue } from "../marketData/formatMarketValue.js";
 
 export const STYLE_INSTRUCTIONS = `You write short news briefs for Hodl Horizon, a finance and crypto news site. You write like an experienced wire-service journalist on a deadline: precise, factual, plain language, zero padding.
 
@@ -23,6 +24,7 @@ HARD RULES:
 - Only use facts present in the source material below. Never invent a number, quote, or name.
 - When you do quote a price for a commodity, index, or crypto asset, always name and price it the way TradingView and other trading platforms do - the real spot/futures/index instrument - so both a professional trader and a beginner checking a live chart see the same number. Never quote a related ETF or fund's share price as if it were the asset's own price (for example, do not say "gold is at $398" when that's the SPDR Gold Shares ETF (GLD) price - GLD trades at roughly 1/11th of the actual gold price because of how the fund is structured, so mixing the two produces a number that looks wrong even when it's technically accurate for GLD). This applies even if a source headline itself only mentions the ETF/fund ticker - convert your understanding to the real instrument rather than repeating the fund's price under the instrument's name. Reference instruments:
 ${instrumentReferenceText()}
+- Do not compare a serious financial instrument's price action to meme coins, casinos, or other slang/joke framing (e.g. "gold is fluctuating like meme coins") - describe the actual volatility in plain, professional terms instead. This site's voice is a wire-service journalist, not a social media post.
 - Do not give buy/sell/hold instructions. Describe what happened and let the reader draw conclusions.
 - Do not mention or describe images. This site never uses images in articles.`;
 
@@ -92,26 +94,114 @@ Respond with ONLY a JSON object with these exact keys:
 ${FEW_SHOT_EXAMPLES}`;
 }
 
+// Overrides STYLE_INSTRUCTIONS' "3 short paragraphs / 130 words" limit for
+// Analysis specifically - this is the one category meant to read as real
+// depth rather than a headline blurb (see the content-strategy note this
+// was added under), so it needs its own length rule instead of inheriting
+// the news brief's. Everything else in STYLE_INSTRUCTIONS still applies
+// (voice, banned words, no em dash, never invent a number).
+//
+// A first version of this just said "write 5-7 paragraphs" as one bullet
+// point below STYLE_INSTRUCTIONS' own "three paragraphs" hard rule - live
+// testing (real OpenAI calls) showed that instruction alone consistently
+// lost to the earlier, more specific one: every real draft came back at
+// exactly 3 paragraphs / ~130-170 words regardless. A concrete
+// paragraph-by-paragraph outline (built dynamically below based on what
+// context is actually available) gives the model somewhere specific to
+// put the extra length instead of an abstract count to hit, and repeating
+// the requirement immediately before the output-format instruction (where
+// models weight recent context more heavily) is what actually got real
+// output to 5-7 paragraphs in testing.
+function buildAnalysisOutline(hasCoverage, hasCalendar) {
+  const steps = [
+    "1. The current price and trend, stated plainly (this can be short).",
+    "2. What the RSI reading suggests about momentum right now - overbought/oversold/neutral, and what that has tended to precede.",
+    "3. The support and resistance levels: what breaking either would signal, and how far price currently sits from each.",
+  ];
+  let n = 4;
+  if (hasCoverage) steps.push(`${n++}. Compare what the recent related coverage below is emphasizing - agreement or disagreement between outlets, a detail one covers that another doesn't.`);
+  if (hasCalendar) steps.push(`${n++}. The upcoming event below, if and only if it's genuinely relevant to this asset - how it could move these specific levels.`);
+  steps.push(`${n++}. A synthesis paragraph: what these numbers together (not any single one in isolation) suggest about likely near-term conditions.`);
+  steps.push(`${n}. The not-financial-advice disclaimer.`);
+  return steps.join("\n");
+}
+
 // Analysis briefs (spec section 4/5.2): narrate computed technical numbers,
 // never headlines. Called by the separate Analysis job
 // (services/analysis/runAnalysis.js), never by the news scanner.
-export function buildAnalysisPrompt(snapshot, correctionNote) {
+//
+// context (optional): { relatedCoverage, calendarContext } - see
+// runAnalysis.js's findRelatedCoverage()/findUpcomingHighImpactEvent() for
+// where these come from. Both are additive: with neither, this still
+// produces a valid, complete Analysis piece from the snapshot alone (the
+// original behavior) - they're only appended when there's genuinely
+// something real to add, never invented to pad length.
+export function buildAnalysisPrompt(snapshot, correctionNote, context = {}) {
   const correctionBlock = correctionNote
-    ? `\nCORRECTION NEEDED: your previous attempt at this brief failed this check: ${correctionNote}. Regenerate the full response from scratch, still following every HARD RULE above, and specifically fix this.\n`
+    ? `\nCORRECTION NEEDED: your previous attempt at this brief failed this check: ${correctionNote}. Regenerate the full response from scratch, still following every rule above, and specifically fix this.\n`
     : "";
+
+  const hasCoverage = Boolean(context.relatedCoverage?.length);
+  const hasCalendar = Boolean(context.calendarContext);
+
+  // Real published coverage from this site's own news categories (not a
+  // second live fetch - see runAnalysis.js) about the same asset, when
+  // 2+ independently-sourced articles exist recently. This is the actual
+  // differentiator versus a plain rewrite: comparing what different
+  // outlets are reporting, not just citing how many there are.
+  const coverageBlock = hasCoverage
+    ? `\nRecent reporting on ${snapshot.symbol} from this site's own news coverage (drawn from ${context.relatedCoverage.reduce((n, a) => n + a.sources.length, 0)} distinct outlet(s) across ${context.relatedCoverage.length} recent stor${context.relatedCoverage.length === 1 ? "y" : "ies"}) - use this to compare what's being emphasized and note any disagreement or shift in narrative, don't just restate it:\n${context.relatedCoverage
+        .map((a) => `- "${a.title}" (sources: ${a.sources.join(", ")}): ${a.dek}`)
+        .join("\n")}\n`
+    : "";
+
+  // A genuinely imminent high-impact macro event - only included when one
+  // exists within the next few days (see runAnalysis.js), so this never
+  // shows up as filler on a piece where there's nothing upcoming worth
+  // flagging.
+  const calendarBlock = hasCalendar
+    ? `\nUpcoming: ${context.calendarContext}. Mention this only if it's genuinely relevant to what you're analyzing here - don't force it in.\n`
+    : "";
+
+  const paragraphCount = 3 + (hasCoverage ? 1 : 0) + (hasCalendar ? 1 : 0) + 2;
+  const minWords = paragraphCount * 65;
+  const maxWords = paragraphCount * 90;
+
+  // Live testing (real OpenAI calls) surfaced a second failure mode after
+  // the paragraph-count one above was fixed: the model hit exactly
+  // ${paragraphCount} paragraphs but wrote them short (~35 words each,
+  // ~200 words total) - well under minWords, and short enough that
+  // read_minutes (Math.max(1, round(wordCount/200)), same formula as
+  // every other category) still rounded to "1 min read," identical to a
+  // news blurb, defeating the actual point of this being a longer format.
+  // Stating the word floor as its own blunt, repeated line (not just
+  // buried inside the paragraph-count bullet above) is what fixed it in
+  // testing - a single combined instruction was easy for the model to
+  // satisfy on the paragraph-count half while quietly shortchanging the
+  // word-count half.
+  const lengthOverride = `LENGTH OVERRIDE FOR THIS PIECE (ignore the "Maximum 130 words / three paragraphs" rule above entirely - it's for news briefs, not Analysis, and does not apply here):
+- Write exactly ${paragraphCount} paragraphs.
+- The body must be at least ${minWords} words, ideally ${minWords}-${maxWords}. A short news-brief-length answer (under 200 words) fails this instruction even if the paragraph count is right - each paragraph below needs real, specific development (multiple sentences), not one short sentence each.
+- Follow this structure, one paragraph per step (a step can be short if it genuinely has little to add, but should still be a real sentence or two, not skipped or merged with another step):
+${buildAnalysisOutline(hasCoverage, hasCalendar)}
+- Do not pad length with generic filler ("markets remain volatile," "investors should stay alert") to hit the word count - every added sentence should say something specific and real about these numbers or the context given, not restate the same point in more words.`;
 
   return `${STYLE_INSTRUCTIONS}
 
-Write a short analysis brief for ${snapshot.symbol} using ONLY these computed figures - do not add any fact not listed here:
-- Current price: $${snapshot.price}
+${lengthOverride}
+
+Write an analysis brief for ${snapshot.symbol}. Use ONLY these computed figures for any number you state about price, trend, RSI, support, or resistance - do not invent or adjust any of them, and do not state a different number for any of these than the one given here:
+- Current price: ${formatMarketValue(snapshot.price, snapshot.assetClass)}
 - Trend: ${snapshot.trend} (price ${snapshot.trend === "Bullish" ? "above" : "below"} its 50-day moving average)
 - RSI (14-day): ${snapshot.rsi_14} (${snapshot.rsi_note})
-- Support: $${snapshot.support}
-- Resistance: $${snapshot.resistance}
-
-Explain in plain language what these numbers suggest about current momentum, using the HARD RULES above. End with a plain-language note that this is not financial advice - readers should draw their own conclusions.
+- Support: ${formatMarketValue(snapshot.support, snapshot.assetClass)}
+- Resistance: ${formatMarketValue(snapshot.resistance, snapshot.assetClass)}
+${coverageBlock}${calendarBlock}
+Explain in plain language what these numbers suggest about current momentum. If related coverage or an upcoming event is given above, weave it in as genuine context, not a bolted-on extra paragraph. End with a plain-language note that this is not financial advice - readers should draw their own conclusions.
 ${correctionBlock}
 ${SEO_FIELD_RULES}
+
+Reminder before you write "body": exactly ${paragraphCount} paragraphs following the structure above, at least ${minWords} words total - not 3 short paragraphs, and not ${paragraphCount} very short ones either. Both would be wrong here.
 
 Respond with ONLY a JSON object with these exact keys: { "title": "...", "dek": "...", "body": "...", "seo_title": "50-60 characters, key fact/entity/number near the front", "seo_description": "120-155 characters, one complete sentence" }`;
 }

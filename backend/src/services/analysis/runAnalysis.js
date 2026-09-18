@@ -7,7 +7,9 @@
 // news happened to mention "RSI" or "support."
 import { query } from "../../db.js";
 import { getMarketSnapshot, getCachedTechnicalSnapshot } from "../marketData/prices.js";
+import { formatMarketValue } from "../marketData/formatMarketValue.js";
 import { generateAnalysis } from "../ai/provider.js";
+import { decideArticleStatus } from "../rss/scanAndGenerate.js";
 import {
   getSetting,
   uniqueSlug,
@@ -39,19 +41,140 @@ function ensureNotFinancialAdviceDisclaimer(body) {
 // and services/marketData/refreshMarketData.js, the scheduled job that
 // writes those rows) - never a live provider call from inside this job, and
 // never generated if that asset's cache row is missing, failed, or stale.
-// "Gold (GLD)"/"S&P 500 (SPY)" name the ETF proxy explicitly rather than
-// the underlying metal/index - GLD's share price in particular is roughly
-// a tenth of literal spot gold, so labelling it plain "Gold" would read as
-// a wrong (fabricated-looking) number even though it's real. QQQ isn't on
-// this watchlist - Twelve Data only supplies a real-time quote for it (no
+// "Gold (GLD)" names the ETF proxy explicitly rather than the underlying
+// metal - GLD's share price is roughly a tenth of literal spot gold, so
+// labelling it plain "Gold" would read as a wrong (fabricated-looking)
+// number even though it's real (see instruments.js for why gold has no
+// safe conversion, unlike the index below). "S&P 500" (not "(SPY)") is
+// correct here, not an inconsistency: getCachedTechnicalSnapshot('spy')
+// converts SPY's raw closes to real index points before this ever sees
+// them (services/marketData/prices.js, added alongside the ticker/
+// Markets Overview unification) - the number really is the S&P 500 now,
+// not SPY's own share price, so the label matches. QQQ isn't on this
+// watchlist - Twelve Data only supplies a real-time quote for it (no
 // history), so there's no source for QQQ's SMA/RSI/support-resistance yet.
 const WATCHLIST = [
   { symbol: "BTC", kind: "crypto", coinGeckoId: "bitcoin" },
   { symbol: "ETH", kind: "crypto", coinGeckoId: "ethereum" },
   { symbol: "Gold (GLD)", kind: "cached", cacheKey: "gold" },
-  { symbol: "S&P 500 (SPY)", kind: "cached", cacheKey: "spy" },
+  { symbol: "S&P 500", kind: "cached", cacheKey: "spy" },
   { symbol: "Oil (WTI)", kind: "cached", cacheKey: "wti" },
 ];
+
+// symbol -> where to look for genuinely independent recent coverage of the
+// same real-world asset, reusing the regular news categories' own
+// multi-source reporting instead of a second RSS fetch (see
+// findRelatedCoverage() below). Keywords are matched case-insensitively
+// against a candidate article's title+dek.
+const RELATED_COVERAGE_CONFIG = {
+  BTC: { categorySlug: "crypto", keywords: ["bitcoin", "btc"] },
+  ETH: { categorySlug: "crypto", keywords: ["ethereum", "eth"] },
+  "Gold (GLD)": { categorySlug: "commodities", keywords: ["gold"] },
+  "S&P 500": { categorySlug: "indices", keywords: ["s&p 500", "s&p500", "s&p"] },
+  "Oil (WTI)": { categorySlug: "commodities", keywords: ["oil", "wti", "crude"] },
+};
+
+// Real, already-published reporting on this same asset from this site's
+// own news categories (crypto/commodities/indices) - not a new RSS fetch,
+// just reusing what scanAndGenerate.js already produced and stored
+// (articles + article_sources). Only returned when at least 2 genuinely
+// distinct outlets are behind that recent coverage (a single source
+// republished across two of this site's articles doesn't count as
+// "multiple sources" to synthesize) - buildAnalysisPrompt treats an empty
+// result as "nothing to add," not a failure.
+async function findRelatedCoverage(symbol, withinHours = 48) {
+  const config = RELATED_COVERAGE_CONFIG[symbol];
+  if (!config) return [];
+
+  const { rows: catRows } = await query("SELECT id FROM categories WHERE slug = $1", [config.categorySlug]);
+  if (catRows.length === 0) return [];
+
+  const { rows: articleRows } = await query(
+    `SELECT id, title, dek FROM articles
+     WHERE category_id = $1 AND status = 'published'
+       AND published_at >= now() - ($2 || ' hours')::interval
+     ORDER BY published_at DESC
+     LIMIT 10`,
+    [catRows[0].id, withinHours]
+  );
+
+  const matching = articleRows.filter((a) => {
+    const haystack = `${a.title} ${a.dek}`.toLowerCase();
+    return config.keywords.some((kw) => haystack.includes(kw));
+  });
+  if (matching.length === 0) return [];
+
+  const coverage = [];
+  const distinctSources = new Set();
+  for (const a of matching) {
+    const { rows: sourceRows } = await query(
+      "SELECT DISTINCT source_name FROM article_sources WHERE article_id = $1",
+      [a.id]
+    );
+    const sources = sourceRows.map((s) => s.source_name);
+    sources.forEach((s) => distinctSources.add(s));
+    coverage.push({ title: a.title, dek: a.dek, sources });
+  }
+
+  return distinctSources.size >= 2 ? coverage : [];
+}
+
+// A genuinely imminent high-impact macro event, for the "forward-looking
+// context" ask - reuses calendar_events as-is (same table routes/
+// calendar.js reads), no new event system. Only surfaces something within
+// the next few days so this is never filler on a piece with nothing
+// upcoming worth flagging; buildAnalysisPrompt is told to mention it only
+// if actually relevant, so an irrelevant-but-real event still doesn't
+// force its way into unrelated analysis.
+async function findUpcomingHighImpactEvent(withinDays = 5) {
+  const { rows } = await query(
+    `SELECT title, event_time FROM calendar_events
+     WHERE impact = 'high' AND event_time > now() AND event_time <= now() + ($1 || ' days')::interval
+     ORDER BY event_time ASC
+     LIMIT 1`,
+    [withinDays]
+  );
+  if (rows.length === 0) return null;
+  const days = Math.max(1, Math.round((new Date(rows[0].event_time).getTime() - Date.now()) / (24 * 60 * 60 * 1000)));
+  return `${rows[0].title} in ${days} day${days === 1 ? "" : "s"}`;
+}
+
+// Extends the price-mismatch guardrail's principle (findPriceMismatch/
+// findCommodityPriceMismatch/findIndexPriceMismatch in scanAndGenerate.js)
+// to Analysis - but this is actually the strongest possible case for it:
+// unlike a news brief (checked against a live ticker or source text, both
+// approximations), an Analysis piece is handed the EXACT real price it
+// must use verbatim (see buildAnalysisPrompt), so there's no ambiguity
+// about what "correct" means here. Passes if ANY number in the body is
+// within tolerance of the real price - a model that correctly states the
+// price once, then discusses RSI/support/resistance with their own
+// distinct numbers elsewhere, should not be flagged just because those
+// other numbers don't match the price.
+const ANALYSIS_PRICE_TOLERANCE = 0.05; // tighter than the 15% used elsewhere - this "truth" is exact, not a live approximation
+const NUMBER_RE = /\$?\s?([0-9][0-9,]*(?:\.[0-9]+)?)/g;
+
+export function findAnalysisFactMismatch(body, snapshot) {
+  const truePrice = Number(snapshot.price);
+  if (!Number.isFinite(truePrice) || truePrice <= 0) return null;
+
+  const candidates = [...(body || "").matchAll(NUMBER_RE)]
+    .map((m) => Number(m[1].replace(/,/g, "")))
+    .filter((n) => Number.isFinite(n) && n > 0);
+  if (candidates.length === 0) return null; // nothing numeric to check - not itself a failure
+
+  const closest = candidates.reduce(
+    (best, n) => {
+      const diff = Math.abs(n - truePrice) / truePrice;
+      return diff < best.diff ? { value: n, diff } : best;
+    },
+    { value: null, diff: Infinity }
+  );
+
+  if (closest.diff > ANALYSIS_PRICE_TOLERANCE) {
+    return `No figure in the body is close to the real computed price (${formatMarketValue(truePrice, snapshot.assetClass)}) it was given for ${snapshot.symbol} - closest stated number was ${closest.value.toLocaleString("en-US")} (${Math.round(closest.diff * 100)}% off) - verify before publishing.`;
+  }
+  return null;
+}
 
 async function getLastSnapshot(symbol) {
   const { rows } = await query("SELECT * FROM analysis_snapshots WHERE symbol = $1", [symbol]);
@@ -142,9 +265,19 @@ export async function runAnalysisScan() {
       continue;
     }
 
+    // Real synthesis material, gathered before generation so the model can
+    // actually use it rather than bolting it on after - see
+    // findRelatedCoverage()/findUpcomingHighImpactEvent() above for what
+    // each draws from and why both are safe to omit when there's nothing
+    // genuinely there.
+    const [relatedCoverage, calendarContext] = await Promise.all([
+      findRelatedCoverage(asset.symbol),
+      findUpcomingHighImpactEvent(),
+    ]);
+
     let draft;
     try {
-      draft = await generateAnalysis(snapshot);
+      draft = await generateAnalysis(snapshot, { relatedCoverage, calendarContext });
     } catch (err) {
       console.error(`Analysis job: skipped ${asset.symbol} - generation failed: ${describeGenerationError(err)}.`);
       skipped += 1;
@@ -164,9 +297,41 @@ export async function runAnalysisScan() {
     // actually stored and published.
     draft.body = ensureNotFinancialAdviceDisclaimer(draft.body);
 
-    // A mock-provider draft is placeholder content and must never reach
-    // "published" - see the matching guard in services/rss/scanAndGenerate.js.
-    const status = draft.provider === "mock" ? "review" : autoPublish ? "published" : "review";
+    // Same fact-check principle as scanAndGenerate.js's price-mismatch
+    // guardrail, applied to the exact numbers this piece was handed - see
+    // findAnalysisFactMismatch()'s comment above for why this is actually
+    // the strongest case for the check (no live/source ambiguity, the
+    // real number is known exactly).
+    const priceMismatchNote = findAnalysisFactMismatch(draft.body, snapshot);
+    const priceMismatch = Boolean(priceMismatchNote);
+    if (priceMismatch) {
+      console.warn(`Analysis job: fact-check mismatch for ${asset.symbol} - ${priceMismatchNote}`);
+    }
+
+    // Reuses the exact same publish/review decision the news pipeline
+    // makes (scanAndGenerate.js's decideArticleStatus) instead of a
+    // separate, simpler ternary that never considered whether the draft's
+    // own numbers or body quality actually checked out. categoryMismatch
+    // is always false here - an Analysis piece is filed by its fixed
+    // watchlist entry, not guessed from content, so there's nothing to
+    // disagree with. isMultiSourceAutoPublish is passed as `autoPublish`
+    // (the job-level setting) rather than left false: that flag's real
+    // effect is "skip the review-window delay and publish immediately
+    // once clean," which is the correct behavior here for a different
+    // reason than its name suggests - an Analysis piece is grounded in a
+    // real-time computed snapshot, not an unconfirmed single-source
+    // rumor, so it never needed the delayed-publish grace window a lone
+    // news source gets. A flagged or unclean draft still always lands in
+    // review regardless, exactly as before.
+    const { status, autoPublishAt } = decideArticleStatus({
+      isMockProvider: draft.provider === "mock",
+      categoryMismatch: false,
+      priceMismatch,
+      verificationClean: draft.verificationClean,
+      isMultiSourceAutoPublish: autoPublish,
+      autoPublishDelayHours: Number(await getSetting("auto_publish_delay_hours", 5)),
+    });
+
     const slug = await uniqueSlug(draft.title);
     const wordCount = draft.body.split(/\s+/).length;
     const readMinutes = Math.max(1, Math.round(wordCount / 200));
@@ -181,9 +346,15 @@ export async function runAnalysisScan() {
       seoTitle: draft.seo_title,
       seoDescription: draft.seo_description,
       readMinutes,
-      sourceCount: 1,
+      // Reflects genuine distinct outlets behind the related coverage this
+      // piece drew on, when there was any - otherwise the single real-time
+      // computed snapshot, same as before this change.
+      sourceCount: relatedCoverage.length ? new Set(relatedCoverage.flatMap((a) => a.sources)).size : 1,
       aiProvider: draft.provider,
       publishedAt: status === "published" ? new Date() : null,
+      priceMismatch,
+      priceMismatchNote,
+      autoPublishAt,
     });
 
     await saveSnapshot(asset.symbol, snapshot);

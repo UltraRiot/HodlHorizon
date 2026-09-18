@@ -66,7 +66,7 @@ export default function ArticlePage({ article, related }) {
     // created_at for every pre-existing row, so this is never null even
     // for articles that predate the column.
     dateModified: article.updated_at,
-    author: { "@type": "Organization", name: "Hodl Horizon AI" },
+    author: { "@type": "Organization", name: "Hodl Horizon" },
     publisher: {
       "@type": "Organization",
       name: "Hodl Horizon",
@@ -109,7 +109,25 @@ export default function ArticlePage({ article, related }) {
           <span>·</span>
           <span>{article.read_minutes} min read</span>
           <span>·</span>
-          <span>Written by Hodl Horizon AI</span>
+          <span>Written by Hodl Horizon</span>
+          {article.corrected_at && (
+            <span
+              title={`A figure in this article was flagged by our automated fact-check and corrected on ${new Date(article.corrected_at).toLocaleDateString("en-US", { dateStyle: "medium" })}. See /disclosure for how this works.`}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 5,
+                padding: "3px 9px",
+                borderRadius: 20,
+                fontSize: 12,
+                fontWeight: 600,
+                color: "var(--impact-medium)",
+                border: "1px solid var(--impact-medium)",
+              }}
+            >
+              Corrected {new Date(article.corrected_at).toLocaleDateString("en-US", { dateStyle: "medium" })}
+            </span>
+          )}
         </div>
 
         <div style={{ display: "flex", flexDirection: "column", gap: 20, fontSize: 17, lineHeight: 1.72, color: "var(--text-dim)" }}>

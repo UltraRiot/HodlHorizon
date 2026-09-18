@@ -38,7 +38,7 @@ export default function Header() {
         alignItems: "center",
         justifyContent: "space-between",
         padding: "18px 48px",
-        borderBottom: "1px solid var(--border)",
+        borderBottom: "1px solid var(--header-border)",
         position: "sticky",
         top: 0,
         background: "var(--header-bg)",
@@ -50,10 +50,15 @@ export default function Header() {
     >
       <div style={{ display: "flex", alignItems: "center", gap: 36, flexWrap: "wrap" }}>
         <Link href="/" style={{ display: "flex", alignItems: "center", gap: 9 }}>
-          <svg width="26" height="26" viewBox="0 0 24 24" fill="none" style={{ color: "var(--gold)" }}>
-            <path d="M12 2L4 6.5V17.5L12 22L20 17.5V6.5L12 2Z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
-            <path d="M8 11.5L12 9L16 11.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
+          {/* Was an inline placeholder diamond/shield outline - swapped for
+              the real logo mark (same file the favicon/apple-touch-icon
+              use, see pages/_document.js) so the header and the browser
+              tab show the same branding. This SVG has its own fill colors
+              baked in (dark rounded-square background, gold bars), not
+              currentColor/var(--gold) like the placeholder was, so it
+              intentionally looks the same in both themes rather than
+              re-tinting - that's the approved brand mark, not a bug. */}
+          <img src="/favicon.svg" width={38} height={38} alt="" style={{ borderRadius: 8 }} />
           <span className="serif" style={{ fontWeight: 600, fontSize: 22, color: "var(--text)" }}>
             Hodl<span style={{ color: "var(--gold)" }}>Horizon</span>
           </span>
