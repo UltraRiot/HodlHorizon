@@ -14,9 +14,12 @@
 // The Analysis category is skipped here entirely - it has no RSS sources and
 // is handled by the separate job in services/analysis/runAnalysis.js.
 import { query } from "../../db.js";
+import pool from "../../db.js";
 import { fetchSourceItemsForCategory, fetchDualStocksIndicesItems } from "./fetchSources.js";
 import { groupSimilarItems } from "./grouping.js";
 import { generateArticle } from "../ai/provider.js";
+import { PARAGRAPH2_DIRECTIVES } from "../ai/newsParagraph2Templates.js";
+import { selectTemplate } from "../ai/templateSelection.js";
 import { getCryptoTicker, getCommoditySnapshot, getEquityTicker } from "../marketData/prices.js";
 import { formatMarketValue } from "../marketData/formatMarketValue.js";
 import { sendScheduledArticleAlert } from "../notifications/mailer.js";
@@ -498,6 +501,71 @@ async function alreadyStored(links) {
   return new Set(rows.map((r) => r.source_url));
 }
 
+// Mirrors runAnalysis.js's getRecentlyUsedOpeningTemplateIds/
+// getRecentlyUsedClosingTemplateIds exactly (same query shape, same
+// status = 'published' scoping) - see newsParagraph2Templates.js for what
+// this drives.
+async function getRecentlyUsedParagraph2TemplateIds(categoryId, limit = 5) {
+  const { rows } = await query(
+    `SELECT paragraph2_template_id FROM articles
+     WHERE category_id = $1 AND status = 'published' AND paragraph2_template_id IS NOT NULL
+     ORDER BY published_at DESC LIMIT $2`,
+    [categoryId, limit]
+  );
+  return rows.map((r) => r.paragraph2_template_id);
+}
+
+// Real regression this exists for: this function's own SELECT above is a
+// check, not a lock - it only protects against a source_url that was
+// ALREADY committed by the time this scan's snapshot was taken. Two scan
+// invocations running close enough together (confirmed live: two manual
+// "run the scan again" calls a few seconds apart, from ordinary testing in
+// this project, not a contrived scenario) can both see the same URL as
+// "not yet stored," both generate a full article from it, and both
+// insert - the exact real duplicates found in the backlog (articles
+// 273/274, 275/276, 277/278, 279/280, cleaned up in migrations/019 -
+// same source_url, articles created 5-8 seconds apart). No amount of
+// rewriting the SELECT closes this: the gap is between check and insert,
+// so only the database itself, at the moment of insert, can close it -
+// hence the UNIQUE constraint on article_sources.source_url (also
+// migrations/019) and this function, which inserts the article and all of
+// its sources in one transaction and rolls the whole thing back the
+// instant any source_url insert reports a conflict (rowCount 0, meaning
+// another connection won the race first). Returns the new article's id,
+// or null if this attempt lost the race (the caller treats that exactly
+// like any other discarded duplicate).
+// Exported for the concurrent-insert regression test (scanAndGenerate.test.js) -
+// the only way to actually prove a database-level race fix is to run two
+// real overlapping transactions against a real connection pool, not to
+// unit-test a mocked-out query function.
+export async function insertArticleWithSourcesOrDiscard(articleFields, group) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const boundQuery = (text, params) => client.query(text, params);
+    const articleId = await insertArticle({ ...articleFields, queryFn: boundQuery });
+
+    for (const item of group) {
+      const result = await client.query(
+        "INSERT INTO article_sources (article_id, source_name, source_url) VALUES ($1, $2, $3) ON CONFLICT (source_url) DO NOTHING",
+        [articleId, item.sourceName, item.link]
+      );
+      if (result.rowCount === 0) {
+        await client.query("ROLLBACK");
+        return null;
+      }
+    }
+
+    await client.query("COMMIT");
+    return articleId;
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
 export async function runScanAndGenerate() {
   const { rows: categories } = await query("SELECT id, slug, name FROM categories WHERE slug != 'analysis'");
   const autoPublish = (await getSetting("auto_publish", "true")) === "true";
@@ -603,6 +671,16 @@ export async function runScanAndGenerate() {
       continue;
     }
 
+    // Code-chosen paragraph-2 explanatory framing (see newsParagraph2Templates.js) -
+    // seeded from the last 5 published articles in this category, then
+    // updated in-memory as this category's own loop below picks more, so
+    // two stories generated back-to-back in the SAME scan don't also
+    // repeat each other (an improvement over the DB-only exclusion window
+    // Analysis's equivalent uses, since Analysis only ever generates one
+    // article per asset per scan while a single News category scan can
+    // generate several).
+    let usedParagraph2Ids = await getRecentlyUsedParagraph2TemplateIds(category.id);
+
     let items = await fetchSourceItemsForCategory(category.id);
 
     if (category.slug === "stocks") {
@@ -648,9 +726,34 @@ export async function runScanAndGenerate() {
 
       const previousCoverage = await findPreviousCoverage(category.id, group.map((i) => i.title));
 
+      // Code picks the paragraph-2 framing instead of leaving it to a
+      // generic "why it matters" instruction - see newsParagraph2Templates.js
+      // for why (a real manual read found paragraph 2 defaulting to a
+      // vague hedge template almost every time). Selected once per story
+      // and reused for the retry below if one fires, the same "the model
+      // is required to comply, not asked to choose again" reasoning
+      // runAnalysisScan() already applies to its own templates.
+      const paragraph2Template = selectTemplate(PARAGRAPH2_DIRECTIVES, null, usedParagraph2Ids);
+      usedParagraph2Ids = [...usedParagraph2Ids, paragraph2Template.id];
+
+      // Told to the model BEFORE generation, not just caught after -
+      // real regression this fixes: a headline-only Yahoo Finance item
+      // ("Nasdaq Futures Drop as Treasury Yields Rise") got a specific
+      // invented Nasdaq level (14,300) that was roughly HALF the real
+      // cached level (29,579.5) - findIndexPriceMismatch correctly caught
+      // it and routed the article to review, but that's the check working
+      // as a backstop, not a fix - a thin source tempts the model into
+      // fabricating a specific number every time, which is exactly why
+      // Stocks/Indices in particular (whose main feeds return no
+      // contentSnippet at all - see fetchSources.js) struggle to ever
+      // produce a clean, auto-publishable draft. Reusing
+      // groupHasNoSubstantiveContent (already computed for
+      // findStaleOrThinSource below) instead of a second detector.
+      const isThinSource = groupHasNoSubstantiveContent(group);
+
       let draft;
       try {
-        draft = await generateArticle(group, previousCoverage, category.name);
+        draft = await generateArticle(group, previousCoverage, category.name, paragraph2Template.instruction, isThinSource);
       } catch (err) {
         console.error(
           `AI engine: skipped a story in ${category.slug} ("${group[0].title}") - generation failed: ${describeGenerationError(err)}.`
@@ -781,33 +884,43 @@ export async function runScanAndGenerate() {
       const wordCount = draft.body.split(/\s+/).length;
       const readMinutes = Math.max(1, Math.round(wordCount / 200));
 
-      const articleId = await insertArticle({
-        slug,
-        title: draft.title,
-        dek: draft.dek,
-        body: draft.body,
-        categoryId: category.id,
-        status,
-        seoTitle: draft.seo_title,
-        seoDescription: draft.seo_description,
-        readMinutes,
-        sourceCount: group.length,
-        aiProvider: draft.provider,
-        publishedAt: status === "published" ? new Date() : null,
-        categoryMismatch,
-        categoryMismatchNote,
-        priceMismatch,
-        priceMismatchNote,
-        staleContent,
-        staleContentNote,
-        autoPublishAt,
-      });
+      const articleId = await insertArticleWithSourcesOrDiscard(
+        {
+          slug,
+          title: draft.title,
+          dek: draft.dek,
+          body: draft.body,
+          categoryId: category.id,
+          status,
+          seoTitle: draft.seo_title,
+          seoDescription: draft.seo_description,
+          readMinutes,
+          sourceCount: group.length,
+          aiProvider: draft.provider,
+          publishedAt: status === "published" ? new Date() : null,
+          categoryMismatch,
+          categoryMismatchNote,
+          priceMismatch,
+          priceMismatchNote,
+          staleContent,
+          staleContentNote,
+          autoPublishAt,
+          paragraph2TemplateId: paragraph2Template.id,
+        },
+        group
+      );
 
-      for (const item of group) {
-        await query(
-          "INSERT INTO article_sources (article_id, source_name, source_url) VALUES ($1, $2, $3)",
-          [articleId, item.sourceName, item.link]
-        );
+      // null means another scan already claimed one of this group's
+      // source_urls between when this scan's alreadyStored() snapshot was
+      // taken and now - the exact race insertArticleWithSourcesOrDiscard
+      // exists to close. The whole attempt (article + all its sources)
+      // was rolled back atomically, so there's nothing left to clean up -
+      // just count it the same way any other discarded duplicate is
+      // counted and move on to the next group.
+      if (articleId === null) {
+        console.log(`AI engine: ${category.slug} - "${draft.title}" lost a race with another scan already covering this source - discarded.`);
+        totals.skippedDuplicate += 1;
+        continue;
       }
 
       // The delayed-auto-publish window (see decideArticleStatus() above)

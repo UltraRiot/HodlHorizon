@@ -2,13 +2,15 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { applyTheme, setStoredTheme } from "../lib/theme";
 
+// Analysis link intentionally omitted (News-is-the-only-active-category
+// priority shift) - kept out of this hardcoded list rather than deleted
+// from anywhere else, so re-adding it later is a one-line change here.
 const NAV_ITEMS = [
   { href: "/", label: "Home" },
   { href: "/category/stocks", label: "Stocks" },
   { href: "/category/indices", label: "Indices" },
   { href: "/category/commodities", label: "Commodities" },
   { href: "/category/crypto", label: "Crypto" },
-  { href: "/category/analysis", label: "Analysis" },
 ];
 
 export default function Header() {

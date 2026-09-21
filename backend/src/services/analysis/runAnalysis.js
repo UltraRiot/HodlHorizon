@@ -8,8 +8,10 @@
 import { query } from "../../db.js";
 import { getMarketSnapshot, getCachedTechnicalSnapshot } from "../marketData/prices.js";
 import { formatMarketValue } from "../marketData/formatMarketValue.js";
-import { generateAnalysis } from "../ai/provider.js";
+import { generateAnalysis, generateAnalysisFreshnessCheck } from "../ai/provider.js";
 import { decideArticleStatus } from "../rss/scanAndGenerate.js";
+import { normalize, jaccardSimilarity } from "../rss/grouping.js";
+import { OPENING_TEMPLATES, CLOSING_DIRECTIVES, selectTemplate } from "../ai/analysisTemplates.js";
 import {
   getSetting,
   uniqueSlug,
@@ -31,8 +33,20 @@ import {
 // second, redundant one appended.
 const NOT_FINANCIAL_ADVICE_DISCLAIMER = "This is not financial advice; readers should draw their own conclusions.";
 
+// Real regression, found in a real batch (articles 341, 349): the model
+// sometimes writes its own disclaimer phrased "This analysis does NOT
+// CONSTITUTE financial advice" - which the old check (literal substring
+// "not financial advice") doesn't recognize, since "constitute" sits
+// between "not" and "financial." Broadened to the bare phrase "financial
+// advice," which every real disclaimer variant seen in this project's
+// output (this one, "not financial advice," "no financial advice") shares,
+// without being so broad it would false-positive on unrelated content -
+// a body that mentions "financial advice" at all is, in practice, always
+// either this disclaimer or a paragraph ABOUT the concept of financial
+// advice, either of which means a second appended disclaimer would be
+// redundant.
 function ensureNotFinancialAdviceDisclaimer(body) {
-  if (body.toLowerCase().includes("not financial advice")) return body;
+  if (body.toLowerCase().includes("financial advice")) return body;
   return `${body}\n\n${NOT_FINANCIAL_ADVICE_DISCLAIMER}`;
 }
 
@@ -60,7 +74,10 @@ function ensureNotFinancialAdviceDisclaimer(body) {
 // docs, https://twelvedata.com/docs#time-series, 2026-09-18), the same
 // endpoint SPY's history now uses, so QQQ's SMA/RSI/support-resistance
 // would be just as available as SPY's the day someone adds it here.
-const WATCHLIST = [
+// Exported so auditPublishedAnalysis.js iterates the exact same symbol
+// list this job does, rather than a second hardcoded copy that could
+// silently drift out of sync the day a new asset is added here.
+export const WATCHLIST = [
   { symbol: "BTC", kind: "crypto", coinGeckoId: "bitcoin" },
   { symbol: "ETH", kind: "crypto", coinGeckoId: "ethereum" },
   { symbol: "Gold", kind: "cached", cacheKey: "gold" },
@@ -89,7 +106,51 @@ const RELATED_COVERAGE_CONFIG = {
 // republished across two of this site's articles doesn't count as
 // "multiple sources" to synthesize) - buildAnalysisPrompt treats an empty
 // result as "nothing to add," not a failure.
-async function findRelatedCoverage(symbol, withinHours = 48) {
+// excludeIds: coverage article ids already used in this instrument's own
+// recent Analysis pieces (see getRecentlyUsedCoverageIds below) - real
+// regression this exists for: articles 372-380 (BTC) kept reusing the
+// SAME relatedCoverage fact ("despite a 1.5% decline in September,
+// Bitcoin is on track for its first quarterly gain in a year") reworded
+// fresh in article after article, because this function only ever asked
+// "is there coverage in the last 48h," never "have I already used this
+// specific coverage for this instrument recently." Excludes already-used
+// ids first, but falls back to the full unfiltered set if that leaves
+// nothing (or drops below the 2-distinct-source bar) - "exclude
+// already-used facts... unless no other relevant coverage exists" means
+// falling back, not going silent.
+// Pure selection logic, exported for direct testing (the same reason
+// every other check in this file separates a pure decision from its DB
+// fetch) - candidates already carry their resolved sources, so this is
+// just: exclude already-used ids, but fall back to the unfiltered
+// candidate list if that leaves nothing usable (empty, or under the
+// 2-distinct-source bar) rather than silently dropping all context.
+export function selectRelatedCoverage(candidates, excludeIds) {
+  const hasEnoughSources = (list) => new Set(list.flatMap((a) => a.sources)).size >= 2;
+
+  const notRecentlyUsed = candidates.filter((a) => !excludeIds.has(a.id));
+  if (notRecentlyUsed.length > 0 && hasEnoughSources(notRecentlyUsed)) {
+    return notRecentlyUsed.map(({ id, title, dek, sources }) => ({ id, title, dek, sources }));
+  }
+
+  // Nothing left after exclusion (or it dropped below the source-count
+  // bar) - fall back to the unfiltered set rather than silently dropping
+  // all context, per "unless no other relevant coverage exists."
+  return hasEnoughSources(candidates)
+    ? candidates.map(({ id, title, dek, sources }) => ({ id, title, dek, sources }))
+    : [];
+}
+
+// excludeIds: coverage article ids already used in this instrument's own
+// recent Analysis pieces (see getRecentlyUsedCoverageIds below) - real
+// regression this exists for: articles 372-380 (BTC) kept reusing the
+// SAME relatedCoverage fact ("despite a 1.5% decline in September,
+// Bitcoin is on track for its first quarterly gain in a year") reworded
+// fresh in article after article, because this function only ever asked
+// "is there coverage in the last 48h," never "have I already used this
+// specific coverage for this instrument recently." See
+// selectRelatedCoverage above for the actual exclude-with-fallback logic -
+// this is just the DB-fetching wrapper around it.
+async function findRelatedCoverage(symbol, excludeIds = new Set(), withinHours = 48) {
   const config = RELATED_COVERAGE_CONFIG[symbol];
   if (!config) return [];
 
@@ -111,19 +172,50 @@ async function findRelatedCoverage(symbol, withinHours = 48) {
   });
   if (matching.length === 0) return [];
 
-  const coverage = [];
-  const distinctSources = new Set();
+  const candidates = [];
   for (const a of matching) {
     const { rows: sourceRows } = await query(
       "SELECT DISTINCT source_name FROM article_sources WHERE article_id = $1",
       [a.id]
     );
-    const sources = sourceRows.map((s) => s.source_name);
-    sources.forEach((s) => distinctSources.add(s));
-    coverage.push({ title: a.title, dek: a.dek, sources });
+    candidates.push({ id: a.id, title: a.title, dek: a.dek, sources: sourceRows.map((s) => s.source_name) });
   }
 
-  return distinctSources.size >= 2 ? coverage : [];
+  return selectRelatedCoverage(candidates, excludeIds);
+}
+
+async function getRecentlyUsedCoverageIds(symbol, limit = 5) {
+  const { rows } = await query(
+    `SELECT used_coverage_article_ids FROM articles
+     WHERE analysis_symbol = $1 AND status = 'published' AND used_coverage_article_ids IS NOT NULL
+     ORDER BY published_at DESC LIMIT $2`,
+    [symbol, limit]
+  );
+  const ids = new Set();
+  for (const row of rows) {
+    for (const id of row.used_coverage_article_ids || []) ids.add(id);
+  }
+  return ids;
+}
+
+async function getRecentlyUsedOpeningTemplateIds(categoryId, limit = 5) {
+  const { rows } = await query(
+    `SELECT opening_template_id FROM articles
+     WHERE category_id = $1 AND status = 'published' AND opening_template_id IS NOT NULL
+     ORDER BY published_at DESC LIMIT $2`,
+    [categoryId, limit]
+  );
+  return rows.map((r) => r.opening_template_id);
+}
+
+async function getRecentlyUsedClosingTemplateIds(categoryId, limit = 5) {
+  const { rows } = await query(
+    `SELECT closing_template_id FROM articles
+     WHERE category_id = $1 AND status = 'published' AND closing_template_id IS NOT NULL
+     ORDER BY published_at DESC LIMIT $2`,
+    [categoryId, limit]
+  );
+  return rows.map((r) => r.closing_template_id);
 }
 
 // A genuinely imminent high-impact macro event, for the "forward-looking
@@ -253,12 +345,38 @@ const DISTANCE_TOLERANCE_PP = 0.3;
 // "support"/"resistance" by coincidence.
 const DISTANCE_CLAIM_RE = /(\d+(?:\.\d+)?)\s?%\s*(?:away\s+from|above|below|of|from)?\s*(?:(?:its|the)\s+)?(support|resistance)(?:\s+level)?\b/gi;
 
+// Real regression, found in a real published Bitcoin piece (fixed alongside
+// the support/resistance window bug that made this MORE likely to trigger:
+// price now legitimately sits outside the support/resistance band whenever
+// there's a genuine breakout, so the model has to describe that direction
+// correctly far more often than when the window bug pinned resistance to
+// the current price): "Bitcoin is just $833.79 below its immediate
+// resistance level" for price $81,163.14 / resistance $80,329.35 - price
+// was actually $833.79 ABOVE resistance (a real breakout), not below it.
+// The magnitude was exactly right; only the direction word was backwards.
+// DISTANCE_CLAIM_RE above only ever matches a PERCENTAGE claim ("X% away
+// from...") and never checked direction either (it compares magnitude via
+// Math.abs on both sides) - this is a second, parallel pattern for a
+// dollar-amount claim, which additionally verifies the stated direction
+// word against the real sign of (price - level), not just the magnitude.
+// "shy of"/"away from" accepted in the same number-first slot as
+// above/below ("$833.79 shy of resistance") for consistency with this
+// regex's own structure, even though "shy of" more often precedes the
+// number in natural writing ("just shy of resistance by $833.79") - not
+// attempting every real word order, the same narrow-broadening approach
+// DISTANCE_CLAIM_RE's own comment above already documents. "away from" is
+// genuinely directionless (could be above or below) so it only verifies
+// magnitude, never direction - there's nothing to check it against.
+const DOLLAR_DISTANCE_CLAIM_RE = /\$\s?([0-9][0-9,]*(?:\.[0-9]+)?)\s*(above|below|shy of|away from)\s*(?:(?:its|the)\s+)?(?:\w+\s+)?(support|resistance)(?:\s+level)?\b/gi;
+const DOLLAR_DISTANCE_SIGN = { above: 1, below: -1, "shy of": -1 }; // "away from" omitted on purpose - ambiguous, see comment above
+
 export function findAnalysisDistanceMismatch(body, snapshot) {
   const price = Number(snapshot.price);
   const support = Number(snapshot.support);
   const resistance = Number(snapshot.resistance);
   if (![price, support, resistance].every((n) => Number.isFinite(n) && n > 0)) return null;
 
+  const levelValue = { support, resistance };
   const realPercent = {
     support: (Math.abs(price - support) / price) * 100,
     resistance: (Math.abs(resistance - price) / price) * 100,
@@ -275,6 +393,241 @@ export function findAnalysisDistanceMismatch(body, snapshot) {
       return `Body claims price is ${stated}% from ${level}, but the real figure computed from the given price/${level} is ${real.toFixed(1)}% (off by ${diff.toFixed(1)} percentage points) - verify before publishing.`;
     }
   }
+
+  for (const claim of (body || "").matchAll(DOLLAR_DISTANCE_CLAIM_RE)) {
+    const statedAmount = Number(claim[1].replace(/,/g, ""));
+    const direction = claim[2].toLowerCase();
+    const level = claim[3].toLowerCase();
+    if (!Number.isFinite(statedAmount)) continue;
+
+    // price - level > 0 means price sits ABOVE that level, regardless of
+    // whether the level is called support or resistance - "above the
+    // resistance level" and "above the support level" both just mean
+    // price > that number, so the same sign check applies to either.
+    const actualDiff = price - levelValue[level];
+    const expectedSign = DOLLAR_DISTANCE_SIGN[direction];
+    if (expectedSign !== undefined) {
+      const actualSign = actualDiff >= 0 ? 1 : -1;
+      if (actualSign !== expectedSign) {
+        const actualWord = actualSign === 1 ? "above" : "below";
+        return `Body claims price is $${statedAmount.toLocaleString("en-US")} ${direction} ${level}, but price (${formatMarketValue(price, snapshot.assetClass)}) is actually ${actualWord} ${level} (${formatMarketValue(levelValue[level], snapshot.assetClass)}), not ${direction} it - the direction is backwards, verify before publishing.`;
+      }
+    }
+
+    // Same magnitude check as the percentage claims above, just converting
+    // the stated dollar amount to a percentage of price first so it can
+    // reuse the same tolerance and ground truth.
+    const statedAsPercent = (statedAmount / price) * 100;
+    const real = realPercent[level];
+    const diff = Math.abs(statedAsPercent - real);
+    if (diff > DISTANCE_TOLERANCE_PP) {
+      return `Body claims price is $${statedAmount.toLocaleString("en-US")} ${direction} ${level} (~${statedAsPercent.toFixed(1)}%), but the real distance computed from the given price/${level} is ${real.toFixed(1)}% - verify before publishing.`;
+    }
+  }
+
+  return null;
+}
+
+// Real regression this exists for: at least 3 separate published Bitcoin
+// pieces (articles 281/285/301) reused the same "1.5% decline in
+// September... first quarterly gain in a year... Ether/XRP outflows"
+// narrative near-verbatim over successive articles - numbers changed,
+// the piece read as the same one reworded. Calibrated against this
+// project's real published Analysis backlog (checked 2026-09-18, not
+// guessed): whole-body Jaccard word-overlap between different real BTC
+// articles from different sessions/days normally tops out around 0.45
+// (shared structural vocabulary - "RSI," "resistance," "neutral zone" -
+// but different numbers and specifics); the one confirmed genuine
+// near-clone pair in the backlog (articles 171/186, an older short-format
+// template with only the 3 numbers swapped) scored 0.66. 0.55 sits
+// between those with real headroom on both sides.
+//
+// Important, honest limitation (confirmed empirically before picking this
+// approach): this catches near-VERBATIM reuse, not paraphrased reuse of
+// the same fact in different words - the exact 281/285/301 case that
+// motivated this only scores ~0.39-0.40 whole-body (even the single most
+// obviously-reused sentence pair between them scores ~0.36-0.43 at the
+// sentence level), because Jaccard has no notion of meaning, only word
+// overlap - the identical limitation already documented on findBodyProblem
+// in provider.js. A threshold low enough to catch that paraphrased case
+// would also flag ordinary legitimate day-to-day variation (195 vs 199,
+// two genuinely different real articles, scores 0.42). This deterministic
+// check is still worth having for the extreme/lazy case it CAN catch
+// reliably; the paraphrased case needs a semantic (LLM-based) check
+// instead - see PRIOR_COVERAGE_REUSE_QUESTION in prompts.js/provider.js,
+// added after this exact gap was confirmed by auditPublishedAnalysis.js.
+const SIMILARITY_TO_PRIOR_THRESHOLD = 0.55;
+
+// Pure comparison, no DB access - takes the prior article directly rather
+// than fetching it, both so it's directly unit-testable against synthetic
+// bodies (the same reason every other check in this file is a pure
+// function of its inputs) and so auditPublishedAnalysis.js, which already
+// holds a whole chronological list of an instrument's articles in memory,
+// can reuse this without a redundant query per comparison. priorArticle:
+// { id, title, body } or null/undefined (nothing to compare against yet -
+// e.g. the very first article ever published for this instrument).
+export function findAnalysisSimilarityMismatch(body, priorArticle) {
+  if (!priorArticle) return null;
+
+  const similarity = jaccardSimilarity(normalize(body), normalize(priorArticle.body));
+  if (similarity < SIMILARITY_TO_PRIOR_THRESHOLD) return null;
+
+  return `This draft is ${Math.round(similarity * 100)}% similar (word-overlap) to the last published analysis for this instrument (article ${priorArticle.id}, "${priorArticle.title}") - reads as the same piece reworded rather than a fresh take. Vary the structure, opening, and phrasing, and drop or explicitly attribute ("as previously reported") any repeated fact that isn't new.`;
+}
+
+// Shared by both checks below that need "the last published article for
+// this instrument" - fetched once per verification pass rather than once
+// per check, since both the lexical similarity check and the LLM
+// freshness check (see verifyAnalysisDraft) need the exact same row.
+async function getLastPublishedArticleForSymbol(symbol) {
+  const { rows } = await query(
+    `SELECT id, title, body FROM articles
+     WHERE analysis_symbol = $1 AND status = 'published'
+     ORDER BY published_at DESC
+     LIMIT 1`,
+    [symbol]
+  );
+  return rows[0] || null;
+}
+
+// --- Repeated opening/closing structural clause detection ---
+// Real corpus evidence, mined from the 82 published articles that existed
+// before this fix (2026-09-19, all categories): 50/82 (61%) open with
+// "[instrument] is currently priced at $X" and 34/82 (41%) immediately
+// follow it with "maintaining a bullish trend as it [trades/sits/remains]
+// above its 50-day moving average" - a near-verbatim template with only
+// the instrument/price/verb swapped (real measured Jaccard similarity
+// between two genuine instances: 0.600, vs. 0.045 for an unrelated
+// control sentence - cleanly, lexically separable). Separately, 38/82
+// (46%) close with a wrap-up transition word (Overall/In summary/In
+// synthesis/Considering/Taken together) immediately restating price/RSI/
+// support-resistance - but that pattern's WORDING varies enough between
+// real instances (measured similarity: only 0.364 and 0.250 between two
+// confirmed genuine matches) that whole-clause lexical similarity can't
+// reliably tell it apart from two unrelated closings - the same
+// fundamental limitation already proven for findAnalysisSimilarityMismatch
+// and isDuplicateInCategory (grouping.js/articleUtils.js). Both checks
+// below use a STRUCTURAL FINGERPRINT instead of raw text similarity: does
+// this paragraph match a known template SHAPE, and has that same shape
+// also appeared in enough of the recent same-category published articles
+// to call it a real pattern, not a one-off coincidence.
+const RECENT_CATEGORY_SAMPLE = 10;
+const REPEATED_CLAUSE_THRESHOLD = 3; // the shape must ALSO appear in >= this many of the last RECENT_CATEGORY_SAMPLE
+
+const OPENING_CLAUSE_RE = /\b(?:is currently priced at|is priced at|is currently trading at|current price (?:is|stands at))\b.{0,50}\b(?:maintaining|showing|reflecting)\s+a\s+(?:bullish|bearish)\s+trend\b/i;
+
+// Exported for direct testing against a synthetic body - the same reason
+// every other structural check in this file is a pure, exported function.
+export function hasFormulaicOpening(body) {
+  const firstParagraph = (body || "").split("\n\n")[0] || "";
+  return OPENING_CLAUSE_RE.test(firstParagraph);
+}
+
+// "Taking into account" and "Together," added after the step-4 manual
+// qualitative read (2026-09-19) found two more real, fresh drafts
+// (articles 376, 377) with the identical restate-the-numbers structural
+// pattern under wrap-up words the original list didn't recognize yet -
+// found by actually reading generated output, the same way every other
+// gap in this list of checks has been found all session.
+const WRAPUP_STARTER_RE = /^(overall|in summary|in synthesis|taken together|taking into account|together|considering(?:\s+these\s+factors|\s+the\s+current|\s+all)?|to summarize|altogether)\b/i;
+const CORE_TERM_RE = /\b(rsi|support|resistance)\b/i;
+
+// The disclaimer is usually its own short final paragraph - the real
+// "closing" paragraph a reader experiences as the article's wrap-up is
+// the one immediately before it (or the last paragraph outright, if a
+// draft has no separate disclaimer paragraph of its own).
+export function extractClosingSummaryParagraph(body) {
+  const paragraphs = (body || "").split("\n\n").filter((p) => p.trim().length > 10);
+  for (let i = paragraphs.length - 1; i >= 0; i--) {
+    if (!/financial advice/i.test(paragraphs[i])) return paragraphs[i];
+  }
+  return paragraphs[paragraphs.length - 1] || "";
+}
+
+export function hasFormulaicClosing(body) {
+  const summary = extractClosingSummaryParagraph(body).trim();
+  return WRAPUP_STARTER_RE.test(summary) && CORE_TERM_RE.test(summary);
+}
+
+async function recentSameCategoryBodies(categoryId, limit = RECENT_CATEGORY_SAMPLE) {
+  const { rows } = await query(
+    `SELECT body FROM articles WHERE category_id = $1 AND status = 'published' ORDER BY published_at DESC LIMIT $2`,
+    [categoryId, limit]
+  );
+  return rows.map((r) => r.body);
+}
+
+async function findRepeatedOpeningClause(body, categoryId) {
+  if (!hasFormulaicOpening(body)) return null;
+  const recentBodies = await recentSameCategoryBodies(categoryId);
+  const matchCount = recentBodies.filter(hasFormulaicOpening).length;
+  if (matchCount < REPEATED_CLAUSE_THRESHOLD) return null;
+  return `This draft opens with the same "[instrument] is currently priced at $X, maintaining a bullish/bearish trend..." template as ${matchCount} of the last ${recentBodies.length} published articles in this category - vary the opening; don't lead with the price-and-trend template every time.`;
+}
+
+async function findRepeatedClosingClause(body, categoryId) {
+  if (!hasFormulaicClosing(body)) return null;
+  const recentBodies = await recentSameCategoryBodies(categoryId);
+  const matchCount = recentBodies.filter(hasFormulaicClosing).length;
+  if (matchCount < REPEATED_CLAUSE_THRESHOLD) return null;
+  return `This draft's closing paragraph opens with a wrap-up transition word ("Overall," "In summary," etc.) immediately restating price/RSI/support-resistance - the same structural pattern as ${matchCount} of the last ${recentBodies.length} published articles in this category. Skip the "Overall/In summary" transition, or make the closing point something other than a restatement of numbers already given.`;
+}
+
+// Bundles every Analysis fact-check into one entry point, so both the live
+// generation pipeline (runAnalysisScan below) and the after-the-fact audit
+// (auditPublishedAnalysis.js) run the exact same checks the exact same
+// way - a check added here automatically covers both without either
+// caller needing to change. Deterministic checks run first (cheap, free,
+// no network) so the common case of an already-broken draft never pays
+// for the LLM freshness call; the first failure found wins either way.
+//
+// includeSemanticFreshnessCheck: defaults to FALSE, in both the live
+// pipeline and the audit, and this needed two real rounds of testing to
+// find out why. Round 1 (no allowlist for price/support/resistance/RSI/
+// trend) flagged 23 of 24 real article pairs - fixed by adding the
+// allowlist now in buildAnalysisFreshnessCheckPrompt. Round 2, AFTER that
+// fix, still flagged 22 of 28: almost every "violation" was the model
+// correctly re-mentioning a genuinely-still-upcoming Fed rate decision
+// (findUpcomingHighImpactEvent() legitimately keeps re-serving the same
+// real event to every article generated before it actually happens) or
+// genuinely-still-in-window relatedCoverage (findRelatedCoverage()'s own
+// 48-hour freshness window can legitimately still be serving the same
+// real prior Hodl Horizon article on back-to-back generations). This
+// check only ever sees the two draft BODIES, never what context was
+// actually fed into either generation - it structurally cannot tell
+// "correctly restating real, unchanged input" from "recycling a narrative
+// with no current grounding," and real testing shows the former is common
+// enough to make this unsafe as a blocking gate: it would retry (spending
+// real API cost) and potentially hold genuinely clean, accurate articles
+// for review, on the same routine Fed-decision mention nearly every time.
+// It DOES still reliably catch the real case that motivated it (articles
+// 285/301's reworded "quarterly gain" narrative, confirmed in both test
+// rounds) - it's just not precise enough yet to trust unattended. Kept
+// available, opt-in only, for a human to spot-check with judgment (pass
+// { includeSemanticFreshnessCheck: true }) until it can be given real
+// visibility into calendarContext/relatedCoverage rather than judging
+// blind from outputs alone - a genuine follow-up, not implemented here.
+export async function verifyAnalysisDraft(title, body, snapshot, symbol, categoryId, { includeSemanticFreshnessCheck = false } = {}) {
+  const deterministicFailure =
+    findAnalysisFactMismatch(title, body, snapshot) ||
+    findMissingQualifier(title, body, snapshot) ||
+    findAnalysisDistanceMismatch(body, snapshot);
+  if (deterministicFailure) return deterministicFailure;
+
+  const prior = await getLastPublishedArticleForSymbol(symbol);
+  const similarityFailure = findAnalysisSimilarityMismatch(body, prior);
+  if (similarityFailure) return similarityFailure;
+
+  const structuralFailure = (await findRepeatedOpeningClause(body, categoryId)) || (await findRepeatedClosingClause(body, categoryId));
+  if (structuralFailure) return structuralFailure;
+
+  if (includeSemanticFreshnessCheck && prior) {
+    const { restates_stale_fact, reason } = await generateAnalysisFreshnessCheck({ body, priorArticleBody: prior.body });
+    if (restates_stale_fact) {
+      return `An independent check found this draft restates a fact from the last published ${symbol} analysis (article ${prior.id}) without flagging it as prior coverage: ${reason}`;
+    }
+  }
+
   return null;
 }
 
@@ -285,17 +638,34 @@ async function getLastSnapshot(symbol) {
 
 async function saveSnapshot(symbol, snap) {
   await query(
-    `INSERT INTO analysis_snapshots (symbol, price, rsi_14, support, resistance, updated_at)
-     VALUES ($1, $2, $3, $4, $5, now())
+    `INSERT INTO analysis_snapshots (symbol, price, rsi_14, support, resistance, trend, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, now())
      ON CONFLICT (symbol) DO UPDATE
-       SET price = $2, rsi_14 = $3, support = $4, resistance = $5, updated_at = now()`,
-    [symbol, snap.price, snap.rsi_14, snap.support, snap.resistance]
+       SET price = $2, rsi_14 = $3, support = $4, resistance = $5, trend = $6, updated_at = now()`,
+    [symbol, snap.price, snap.rsi_14, snap.support, snap.resistance, snap.trend]
   );
 }
 
 // Spec 4.3: only generate a new article if price moved >2%, RSI crossed
-// into/out of overbought/oversold, or a support/resistance level broke.
-function movedMeaningfully(prev, curr) {
+// into/out of overbought/oversold, a support/resistance level broke, or
+// (added after the duplicate-coverage audit) the trend itself flipped.
+// Trend flip is a real, distinct signal a trader cares about that isn't
+// already guaranteed by the other three: trend is defined purely by price
+// vs. the 50-day moving average, and the MA moves slowly enough that
+// price can cross it without moving 2%, without breaking support/
+// resistance (which can sit further away than the MA does), and without
+// crossing an RSI zone boundary. Deliberately NOT adding a calendar-
+// catalyst-proximity condition (a candidate considered during the audit):
+// "meaningfully closer" has no natural numeric threshold the way a price
+// % does, and real batch testing already showed an upcoming Fed decision
+// gets mentioned in nearly every article during its whole run-up window
+// regardless of gating - turning that into a fresh-article TRIGGER would
+// generate more of exactly the repetitive content this gate exists to
+// prevent, not less.
+// Exported (like every other pure guardrail in this file) so the
+// trend-flip condition is directly testable against a synthetic
+// prev/curr pair, not just observable in real generated output.
+export function movedMeaningfully(prev, curr) {
   if (!prev) return true; // no snapshot yet - always generate the first one
 
   const priceChangePct = Math.abs((curr.price - Number(prev.price)) / Number(prev.price)) * 100;
@@ -305,6 +675,11 @@ function movedMeaningfully(prev, curr) {
   if (zone(prev.rsi_14) !== zone(curr.rsi_14)) return true;
 
   if (curr.price > Number(prev.resistance) || curr.price < Number(prev.support)) return true;
+
+  // prev.trend is null for any snapshot saved before migrations/019 added
+  // the column - treated as "unknown," never itself a trigger (a null-to-
+  // real-value transition isn't a genuine flip, just a schema catch-up).
+  if (prev.trend && curr.trend !== prev.trend) return true;
 
   return false;
 }
@@ -372,14 +747,31 @@ export async function runAnalysisScan() {
     // findRelatedCoverage()/findUpcomingHighImpactEvent() above for what
     // each draws from and why both are safe to omit when there's nothing
     // genuinely there.
-    const [relatedCoverage, calendarContext] = await Promise.all([
-      findRelatedCoverage(asset.symbol),
+    const [openingUsedIds, closingUsedIds, coverageUsedIds, calendarContext] = await Promise.all([
+      getRecentlyUsedOpeningTemplateIds(categoryId),
+      getRecentlyUsedClosingTemplateIds(categoryId),
+      getRecentlyUsedCoverageIds(asset.symbol),
       findUpcomingHighImpactEvent(),
     ]);
+    const relatedCoverage = await findRelatedCoverage(asset.symbol, coverageUsedIds);
+
+    // Code picks the opening sentence and closing framing instead of
+    // asking the model to vary itself - see analysisTemplates.js's header
+    // comment for why the old "vary your writing" prompt instruction was
+    // replaced rather than strengthened again: two rounds of real
+    // generation showed it doesn't hold even as an explicit correction
+    // note. Selected once per asset per scan and reused for the retry
+    // below (if one fires) - the model is required to comply, not asked
+    // to choose again.
+    const openingTemplate = selectTemplate(OPENING_TEMPLATES, snapshot, openingUsedIds);
+    const closingTemplate = selectTemplate(CLOSING_DIRECTIVES, snapshot, closingUsedIds);
+    const requiredOpeningSentence = openingTemplate.build(snapshot);
+    const closingDirective = closingTemplate.instruction;
+    const usedCoverageIds = relatedCoverage.map((c) => c.id);
 
     let draft;
     try {
-      draft = await generateAnalysis(snapshot, { relatedCoverage, calendarContext });
+      draft = await generateAnalysis(snapshot, { relatedCoverage, calendarContext, requiredOpeningSentence, closingDirective });
     } catch (err) {
       console.error(`Analysis job: skipped ${asset.symbol} - generation failed: ${describeGenerationError(err)}.`);
       skipped += 1;
@@ -399,24 +791,51 @@ export async function runAnalysisScan() {
     // actually stored and published.
     draft.body = ensureNotFinancialAdviceDisclaimer(draft.body);
 
-    // Same fact-check principle as scanAndGenerate.js's price-mismatch
-    // guardrail, applied to the exact numbers this piece was handed - see
-    // each function's comment above for why this is actually the
-    // strongest case for the check (no live/source ambiguity, the real
-    // numbers are known exactly). Three independent checks, first failure
-    // wins - each catches a different real failure mode found in live
-    // output: a wrong price/support/resistance figure (in either the body
-    // or the title), a dropped ETF qualifier, and a wrong derived
-    // percentage-distance claim. All three route through the same
-    // price_mismatch flag/note rather than adding parallel DB columns.
-    const priceMismatchNote =
-      findAnalysisFactMismatch(draft.title, draft.body, snapshot) ||
-      findMissingQualifier(draft.title, draft.body, snapshot) ||
-      findAnalysisDistanceMismatch(draft.body, snapshot);
-    const priceMismatch = Boolean(priceMismatchNote);
-    if (priceMismatch) {
-      console.warn(`Analysis job: fact-check mismatch for ${asset.symbol} - ${priceMismatchNote}`);
+    // Pre-publish gate that actually BLOCKS, not just flags: every
+    // deterministic fact-check (price/support/resistance figure, dropped
+    // ETF qualifier, wrong distance/direction claim, excessive similarity
+    // to this instrument's last published piece - see verifyAnalysisDraft
+    // above) runs against the first draft. A failure used to go straight
+    // to a flagged "review" row with no attempt to fix it - this instead
+    // regenerates ONCE with the specific failure reason fed back into the
+    // prompt as a correction note (the exact same mechanism buildAnalysisPrompt
+    // already uses for its own internal lexical/redundancy retry, just
+    // triggered externally this time - see generateAnalysis's
+    // externalCorrectionNote parameter in provider.js), then re-verifies
+    // the new draft. Only if it fails again - same check or a different
+    // one, doesn't matter - does this fall through to "review" with the
+    // failure reason attached, exactly the way a failed check already
+    // worked, just no longer skipping the one free chance to self-correct.
+    let priceMismatchNote = await verifyAnalysisDraft(draft.title, draft.body, snapshot, asset.symbol, categoryId);
+    if (priceMismatchNote) {
+      console.warn(`Analysis job: fact-check failed for ${asset.symbol} (attempt 1) - ${priceMismatchNote}`);
+      console.warn(`Analysis job: retrying ${asset.symbol} once with the failure reason fed back into the prompt.`);
+      let retryDraft;
+      try {
+        retryDraft = await generateAnalysis(
+          snapshot,
+          { relatedCoverage, calendarContext, requiredOpeningSentence, closingDirective },
+          `Your previous draft failed this check: ${priceMismatchNote}. Regenerate the full brief from scratch and specifically fix this.`
+        );
+      } catch (err) {
+        console.error(`Analysis job: retry generation for ${asset.symbol} failed: ${describeGenerationError(err)} - falling back to the original (flagged) draft.`);
+        retryDraft = null;
+      }
+      if (retryDraft) {
+        retryDraft.body = ensureNotFinancialAdviceDisclaimer(retryDraft.body);
+        const retryNote = await verifyAnalysisDraft(retryDraft.title, retryDraft.body, snapshot, asset.symbol, categoryId);
+        if (retryNote) {
+          console.warn(`Analysis job: fact-check failed for ${asset.symbol} again after retry - ${retryNote}. Holding for review.`);
+          draft = retryDraft; // still the better-effort attempt, even though it's still flagged
+          priceMismatchNote = retryNote;
+        } else {
+          console.log(`Analysis job: retry for ${asset.symbol} passed every check - publishing the corrected draft.`);
+          draft = retryDraft;
+          priceMismatchNote = null;
+        }
+      }
     }
+    const priceMismatch = Boolean(priceMismatchNote);
 
     // Reuses the exact same publish/review decision the news pipeline
     // makes (scanAndGenerate.js's decideArticleStatus) instead of a
@@ -464,6 +883,10 @@ export async function runAnalysisScan() {
       publishedAt: status === "published" ? new Date() : null,
       priceMismatch,
       priceMismatchNote,
+      analysisSymbol: asset.symbol,
+      openingTemplateId: openingTemplate.id,
+      closingTemplateId: closingTemplate.id,
+      usedCoverageArticleIds: usedCoverageIds,
       autoPublishAt,
     });
 

@@ -10,6 +10,24 @@
 import { instrumentReferenceText } from "../marketData/instruments.js";
 import { formatMarketValue } from "../marketData/formatMarketValue.js";
 
+// Single source of truth for the banned-phrase list, shared between the
+// prompt text below and findBannedWordViolation() (provider.js) - the
+// prompt instruction alone was never actually backed by a code check
+// (unlike every other STYLE_INSTRUCTIONS rule with a real regression:
+// numbers, causal claims, attribution, the ETF-price rule all eventually
+// got one), which is exactly how "Market participants will be closely
+// monitoring the Fed's stance..." (real article 332) and "This divergence
+// in focus underscores Bitcoin's unique position..." (real article 338)
+// shipped despite this rule existing in the prompt the whole time. Kept
+// as one array (not two independently-maintained lists) so adding a
+// phrase here automatically updates both what the model is told and what
+// gets verified.
+export const BANNED_PHRASES = [
+  "notable", "significant development", "market participants", "in the world of",
+  "as of this writing", "it remains to be seen", "moving forward", "stay tuned",
+  "in conclusion", "landscape", "realm", "underscores", "boasts",
+];
+
 export const STYLE_INSTRUCTIONS = `You write short news briefs for Hodl Horizon, a finance and crypto news site. You write like an experienced wire-service journalist on a deadline: precise, factual, plain language, zero padding.
 
 HARD RULES:
@@ -19,15 +37,19 @@ HARD RULES:
 - Paragraph 2: why it matters to a trader or investor, in one or two sentences.
 - Paragraph 3 must contain information not already stated in paragraphs 1 or 2 - a different figure, a different named party's reaction, or a concrete next step/date. If you cannot find a genuinely new detail in the source material, shorten the article to 2 paragraphs instead of padding a third one with a rephrased summary.
 - Never use an em dash (—). Use a period, a comma, or "and" instead.
-- Never use these words/phrases: "notable," "significant development," "market participants," "in the world of," "as of this writing," "it remains to be seen," "moving forward," "stay tuned," "in conclusion," "landscape," "realm," "underscores," "boasts."
+- Never use these words/phrases: ${BANNED_PHRASES.map((p) => `"${p}"`).join(", ")}.
 - Never restate the headline's wording in the first sentence - lead with the fact itself.
 - Only use facts present in the source material below. Never invent a number, quote, or name. This applies even when a source gives you nothing but a headline - do not add a supporting statistic, date, or attribution you were not given, even one you're confident is real, since you have no way to know it is not years out of date. Report only what the headline itself states.
 - If the source material describes data or an event from a clearly past period (a named prior year, "last year," "in Q1 2023," etc.), say so plainly ("according to a report covering the first half of 2023") rather than presenting it as today's news - never let a stale figure read as the current situation just because it's in a fresh-dated article.
+- The same rule applies to LOGIC, not just numbers: never state or imply that one fact caused, prompted, drove, or is a consequence of another ("X, despite Y," "Z, prompting speculation about W," "amid," "as a result of") unless the source material itself draws that connection. Real regression this caught: a source said only "The Bank of Japan hiked rates overnight. The move failed to halt the slide in the yen" - two real, unconnected facts - and a draft rewrote this as the yen's slide "prompting speculation about further monetary easing in Japan," which is both invented (the source never mentions easing speculation) and backwards (a hike is tightening, not easing). If the source gives you two real facts with no stated link between them, report them side by side and let the reader draw the connection - do not manufacture one.
+- Exception to the rule above: if the two facts would normally strike a reasonably informed reader as counterintuitive or contradictory (for example, a central bank raising interest rates while its own currency weakens, which usually would be expected to strengthen it) and the source material does not explain why, say so plainly in one clause - "the reason for this divergence wasn't addressed in the available coverage" or similar - rather than only stating both facts side by side with no acknowledgment at all. This is not permission to invent a cause: state that the source doesn't resolve it, don't guess what the resolution is.
+- Never attribute a specific claim, statistic, or quote to a named outlet or source (e.g. "CoinDesk reports that...," "According to Reuters...") unless that exact claim, with that exact source name, appears in the supplied source material below. Naming a real outlet makes an invented claim read as MORE credible, not less, which makes this worse than an unattributed invented number. If you want to reference general market context that isn't tied to a specific named source in the material you were given, describe it without naming an outlet ("recent coverage has noted..." is still risky - prefer dropping the claim entirely over inventing or misattributing it).
 - When you do quote a price for a commodity, index, or crypto asset, always name and price it the way TradingView and other trading platforms do - the real spot/futures/index instrument - so both a professional trader and a beginner checking a live chart see the same number. Never quote a related ETF or fund's share price as if it were the asset's own price (for example, do not say "gold is at $398" when that's the SPDR Gold Shares ETF (GLD) price - GLD trades at roughly 1/11th of the actual gold price because of how the fund is structured, so mixing the two produces a number that looks wrong even when it's technically accurate for GLD). This applies even if a source headline itself only mentions the ETF/fund ticker - convert your understanding to the real instrument rather than repeating the fund's price under the instrument's name. Reference instruments:
 ${instrumentReferenceText()}
 - Do not compare a serious financial instrument's price action to meme coins, casinos, or other slang/joke framing (e.g. "gold is fluctuating like meme coins") - describe the actual volatility in plain, professional terms instead. This site's voice is a wire-service journalist, not a social media post.
 - Do not give buy/sell/hold instructions. Describe what happened and let the reader draw conclusions.
-- Do not mention or describe images. This site never uses images in articles.`;
+- Do not mention or describe images. This site never uses images in articles.
+- Do not restate why a fact matters in generic terms without adding a concrete detail - measured across a real 100-article sample, 18% of published pieces had a sentence like this, e.g. "This surge in AI investment is particularly relevant for technology companies" or "The doubling of the inferred resource is a positive indicator for investors, suggesting enhanced prospects for future development." These sentences add zero information a reader couldn't already infer from the fact itself. Banned constructions: "is particularly relevant for," "is crucial for," "is significant for," "is a positive/negative indicator," "raises questions about," "underscores the importance of," "reflects broader/growing [trend/concerns/interest]." When you want to convey why a fact matters, name the SPECIFIC mechanism instead - a concrete next step, a named consequence, a number that changes as a result - or drop the sentence entirely rather than restate the obvious.`;
 
 // Shared by every prompt that asks for seo_title/seo_description
 // (buildArticlePrompt, buildAnalysisPrompt, buildGlossaryPrompt, and the
@@ -58,7 +80,33 @@ The company said it is still working with regulators and expects shipments to re
 // this exact story failed a post-generation check (too many paragraphs, or
 // paragraph 1/2 too similar) - see findBodyProblem() there. Retried once
 // with this note, then accepted as-is either way.
-export function buildArticlePrompt(items, previousCoverage, correctionNote) {
+// paragraph2Directive (optional): the code-chosen explanatory framing for
+// paragraph 2 (services/ai/newsParagraph2Templates.js) - replaces the
+// generic "why it matters to a trader or investor" instruction above with
+// a forced, specific shape, the same "give it fixed variety and let code
+// choose" mechanism already proven for Analysis's opening/closing
+// templates. Optional so a caller (or a test) that omits it still gets a
+// valid prompt using the generic HARD RULE alone - runScanAndGenerate()
+// always sets it in practice.
+// isThinSource (optional): true when none of the sources below supply
+// real content beyond a headline (scanAndGenerate.js's
+// groupHasNoSubstantiveContent). Real regression this fixes: a headline-
+// only item ("Nasdaq Futures Drop as Treasury Yields Rise") produced a
+// specific invented Nasdaq level roughly HALF the real current one -
+// findIndexPriceMismatch caught it after the fact and correctly routed it
+// to review, but a thin source tempting the model to fabricate a number
+// in the first place - not the after-the-fact catch - is the actual
+// problem, and exactly why Stocks/Indices (whose main feeds return no
+// contentSnippet at all - see fetchSources.js) rarely produce a clean,
+// auto-publishable draft. STYLE_INSTRUCTIONS' general "never invent a
+// number" rule already exists but evidently doesn't reliably hold on its
+// own here, the same lesson this file's own opening comment already
+// states about loose instructions generally - repeating the specific
+// constraint at the point the risk is highest (immediately before the
+// output format, where models weight recent context more heavily,
+// already proven for buildAnalysisPrompt's word-floor fix) is the
+// stronger version of the same rule, not a new one.
+export function buildArticlePrompt(items, previousCoverage, correctionNote, paragraph2Directive, isThinSource) {
   const sourcesText = items
     .map((i, idx) => `Source ${idx + 1} (${i.sourceName}): "${i.title}"${i.contentSnippet ? ` - ${i.contentSnippet}` : ""}`)
     .join("\n");
@@ -71,11 +119,33 @@ export function buildArticlePrompt(items, previousCoverage, correctionNote) {
     ? `\nCORRECTION NEEDED: your previous attempt at this exact story failed this check: ${correctionNote}. Regenerate the full response from scratch, still following every HARD RULE above, and specifically fix this.\n`
     : "";
 
+  const paragraph2Block = paragraph2Directive ? `\nPARAGRAPH 2 REQUIREMENT: ${paragraph2Directive}\n` : "";
+
+  const thinSourceBlock = isThinSource
+    ? `\nTHIN SOURCE WARNING: none of the source(s) above supply anything beyond a headline - no number, level, percentage, or date is given. Do NOT invent one to fill this gap, even a number you believe you already know to be real (it may be outdated or simply wrong for this specific story). Write the piece using only the qualitative fact the headline itself states (what happened, direction, named parties) with zero specific figures you were not given. If you cannot write 3 genuinely informative paragraphs this way, write fewer - do not pad with a fabricated number just to reach length.\n`
+    : "";
+
+  // Cross-asset impact: a real gap found in the manual tone/clarity read -
+  // stories that plainly affect a SPECIFIC named instrument beyond the
+  // primary subject (a Fed decision moving Treasury-sensitive stocks, an
+  // OPEC move affecting a named airline's fuel costs, a BOJ hike moving a
+  // named forex pair) were routinely reported with only the primary
+  // subject, leaving the reader to infer the wider impact themselves. Not
+  // a forced requirement the way the paragraph-2 framing above is -
+  // whether a genuine cross-asset connection exists is content-dependent,
+  // and forcing one onto a story where the source gives no such link
+  // would just be a new kind of fabrication (the same reasoning
+  // newsParagraph2Templates.js's own directives already apply to
+  // themselves). Grounded strictly in the STYLE_INSTRUCTIONS rule against
+  // inventing a causal connection - this only asks the model to state a
+  // connection the source ALREADY supports, never to manufacture one.
+  const crossAssetBlock = `\nCROSS-ASSET IMPACT: if the source material below indicates or clearly implies this story affects a SPECIFIC other instrument - a named stock, commodity, forex pair, or index beyond the primary subject (for example: a central bank rate decision's effect on a specific currency pair, an oil-supply story's effect on a named airline or shipping stock, a chip-export story's effect on a named competitor) - name that instrument explicitly and state how, using only what the source material itself supports. Do not force this if the source gives no such connection to report; a story with no genuine cross-asset angle should not have one invented for it.\n`;
+
   return `${STYLE_INSTRUCTIONS}
 
-Below are headlines and snippets about the same story from ${items.length} source(s).
+Below are headlines and snippets about the same story from ${items.length} source(s). If any source below is written in a language other than English, translate its meaning fully into English before using it - never skip a non-English source, never leave any non-English word or phrase untranslated in your output, and never note that a source was in another language. Write the entire piece in English exactly as you would for an English-language source, using only the facts the source actually contains.
 ${sourcesText}
-${continuationNote}${correctionBlock}
+${continuationNote}${correctionBlock}${paragraph2Block}${crossAssetBlock}${thinSourceBlock}
 Before finalizing, check paragraph 3 against paragraphs 1-2. If it says the same thing in different words, rewrite it or drop it.
 
 ${SEO_FIELD_RULES}
@@ -164,6 +234,24 @@ export function buildAnalysisPrompt(snapshot, correctionNote, context = {}) {
     ? `\nUpcoming: ${context.calendarContext}. Mention this only if it's genuinely relevant to what you're analyzing here - don't force it in.\n`
     : "";
 
+  // Replaces the old "vary your writing" PROMPT instruction entirely -
+  // two separate rounds of real generation proved that doesn't hold, even
+  // fed back as an explicit correction note: 20+ consecutive real BTC/ETH
+  // drafts failed the exact same formulaic-opening check both on the
+  // first attempt AND after being told specifically to fix it (see
+  // runAnalysis.js's real console log, 2026-09-19). Asking the model to
+  // make a good structural choice, even forcefully, isn't reliable here -
+  // so code picks the opening sentence and the closing paragraph's
+  // framing (services/ai/analysisTemplates.js) and hands them over as a
+  // requirement, not a suggestion. requiredOpeningSentence/closingDirective
+  // are always present in practice (runAnalysis.js sets them before every
+  // real call), but both fall back to empty rather than throwing if a
+  // caller ever omits them (e.g. a future test calling this directly).
+  const openingRequirementBlock = context.requiredOpeningSentence
+    ? `\nYour body's FIRST SENTENCE MUST be exactly this, verbatim: "${context.requiredOpeningSentence}" Continue paragraph 1 naturally immediately after it (you may add a second sentence to paragraph 1 if useful), then proceed with the rest of the structure below. Do not rephrase, shorten, or replace this sentence - it was chosen deliberately to avoid repeating this site's own recent opening pattern.\n`
+    : "";
+  const closingRequirementBlock = context.closingDirective ? `\n${context.closingDirective}\n` : "";
+
   // Live testing caught the exact regression a prior commit fixed for the
   // news pipeline: a real "Gold (GLD)" Analysis piece came back titled and
   // worded as plain "Gold" throughout, with "$398.45" (GLD's ETF share
@@ -247,12 +335,14 @@ Write an analysis brief for ${snapshot.symbol}. Use ONLY these computed figures 
 - RSI (14-day): ${snapshot.rsi_14} (${snapshot.rsi_note})
 - Support: ${formatMarketValue(snapshot.support, snapshot.assetClass)}
 - Resistance: ${formatMarketValue(snapshot.resistance, snapshot.assetClass)}
-${qualifierBlock}${coverageBlock}${calendarBlock}
-Explain in plain language what these numbers suggest about current momentum. If related coverage or an upcoming event is given above, weave it in as genuine context, not a bolted-on extra paragraph. End with a plain-language note that this is not financial advice - readers should draw their own conclusions.
+${qualifierBlock}${coverageBlock}${calendarBlock}${openingRequirementBlock}
+Explain in plain language what these numbers suggest about current momentum. If related coverage or an upcoming event is given above, weave it in as genuine context, not a bolted-on extra paragraph.
+${closingRequirementBlock}
+After that closing point, end with a separate, final, plain-language note that this is not financial advice - readers should draw their own conclusions.
 ${correctionBlock}
 ${SEO_FIELD_RULES}
 
-Reminder before you write "body": exactly ${paragraphCount} paragraphs following the structure above, at least ${minWords} words total - not 3 short paragraphs, and not ${paragraphCount} very short ones either. Both would be wrong here. Also: every paragraph must say what these numbers mean for ${snapshot.symbol} specifically right now, not explain what RSI/support/resistance/a moving average generally mean - the reader already knows the general concept, so a paragraph that would still read correctly with the numbers swapped for a different asset has failed and must be rewritten.${qualifierMatch ? ` Also: the symbol is "${snapshot.symbol}" everywhere, not just "${snapshot.symbol.slice(0, qualifierMatch.index).trim()}" - keep the "(${qualifierMatch[1]})" every time.` : ""}
+Reminder before you write "body": exactly ${paragraphCount} paragraphs following the structure above, at least ${minWords} words total - not 3 short paragraphs, and not ${paragraphCount} very short ones either. Both would be wrong here. Also: every paragraph must say what these numbers mean for ${snapshot.symbol} specifically right now, not explain what RSI/support/resistance/a moving average generally mean - the reader already knows the general concept, so a paragraph that would still read correctly with the numbers swapped for a different asset has failed and must be rewritten.${qualifierMatch ? ` Also: the symbol is "${snapshot.symbol}" everywhere, not just "${snapshot.symbol.slice(0, qualifierMatch.index).trim()}" - keep the "(${qualifierMatch[1]})" every time.` : ""}${context.requiredOpeningSentence ? ` Also: your body's first sentence must be exactly the required opening sentence given above, verbatim.` : ""}${context.closingDirective ? ` Also: your closing paragraph must follow the specific closing requirement given above, not a generic summary.` : ""}
 
 Respond with ONLY a JSON object with these exact keys: { "title": "...", "dek": "...", "body": "...", "seo_title": "50-60 characters, key fact/entity/number near the front", "seo_description": "120-155 characters, one complete sentence" }`;
 }
@@ -275,8 +365,13 @@ Respond with ONLY a JSON object with these exact keys:
 
 // Independent verification check (services/ai/provider.js,
 // generateRedundancyCheck) - scoped only to auto-publish candidates (2+
-// sources, about to skip the review queue). Two deliberately narrow,
-// direct questions in one call rather than a general quality pass:
+// sources, about to skip the review queue). This started as two narrow
+// questions and picked up a third below for a different class of problem
+// (an invented causal link, not a number or a redundant paragraph) - kept
+// as one call/one function/one DB flag rather than standing up a parallel
+// mechanism, since the whole point of this check is "ask an independent
+// model instance a narrow, specific question about this draft," and that
+// pattern fits the new question exactly as well as the first two:
 // 1. Paragraph 3 redundancy - the Jaccard-based findBodyProblem() check
 //    already catches lexical (shared-word) redundancy between paragraph 3
 //    and 1/2; this catches the same point restated in different
@@ -285,7 +380,47 @@ Respond with ONLY a JSON object with these exact keys:
 //    paragraph 1 must lead with a real number/date/named source rather
 //    than vague scene-setting; this verifies that actually happened
 //    instead of just trusting the instruction was followed.
-export function buildRedundancyCheckPrompt({ paragraph1, paragraph2, paragraph3 }) {
+//    Investigated (not assumed) whether this question should ALSO catch a
+//    body whose real news is thin/undisclosed - article #875 ("Bitcoin
+//    Faces Key Test on October 18 Amid New Tariffs") admits in paragraph 3
+//    that "the specific rates and targets... have yet to be disclosed." It
+//    shouldn't, and doesn't need to: sampling the last 100 published/
+//    review News articles for that admission-of-thinness phrasing found
+//    only 3/100 hits, ALL landing in paragraph 3 or later, NONE in
+//    paragraph 1 - and #875's own paragraph 1 has a real anchor fact
+//    ("October 18" is a genuine, checkable date), so this question
+//    correctly answers true for it regardless. This question is
+//    deliberately scoped to paragraph 1 only; a thin admission three
+//    paragraphs later is a different failure mode (see
+//    findVagueCrossAssetClaim in provider.js, which is what #875 actually
+//    needed) and the low, exclusively-later-paragraph incidence found here
+//    doesn't support adding a new mechanical gate for it - some legitimate
+//    "X is expected to happen, here's why it matters" previews use this
+//    exact phrasing correctly and shouldn't be banned.
+// 3. Invented causal/logical connection - real regression: source material
+//    stated only two disconnected facts ("BoJ hiked rates overnight" /
+//    "the yen kept sliding"), and the draft rewrote this as the slide
+//    "prompting speculation about further monetary easing" - invented,
+//    and backwards (a hike is tightening, not easing). Unlike questions 1
+//    and 2, there's no source material in this prompt for 1/2 to check
+//    against - sourceText (the original RSS title/snippet(s) the draft was
+//    written from) is new, added only so question 3 has something to
+//    verify against. Honest limitation, worth stating plainly rather than
+//    overclaiming: this is an LLM judging another LLM's output for a
+//    reasoning error, not a deterministic diff like the price/qualifier/
+//    distance checks - it can miss subtler invented connections, and it's
+//    only ever run for real providers in the first place (see provider.js).
+//    It's still worth having, on the same logic as the other two
+//    questions: a narrow, specific ask is far more reliable than a general
+//    "is this good?" pass, even for something this fuzzy.
+export function buildRedundancyCheckPrompt({ paragraph1, paragraph2, paragraph3, sourceText }) {
+  const sourceBlock = sourceText
+    ? `\nOriginal source material this brief was written from:\n${sourceText}\n`
+    : "";
+  const causalNote = sourceText
+    ? ""
+    : " (No original source material was provided for this piece - always answer false to this question.)";
+
   return `You are fact-checking a short news brief before it publishes automatically without human review.
 
 Paragraph 1: ${paragraph1}
@@ -293,14 +428,62 @@ Paragraph 1: ${paragraph1}
 Paragraph 2: ${paragraph2}
 
 Paragraph 3: ${paragraph3}
-
-Answer two questions:
+${sourceBlock}
+Answer four questions:
 
 1. Does paragraph 3 add genuinely new information not already stated in paragraphs 1 or 2 - a different figure, a different named party's reaction, or a concrete next step? Restating the same point in different words does NOT count as new information, even if no words are literally repeated.
 
 2. Does paragraph 1 contain a genuine anchor fact - a specific number, date, or named source/report - rather than vague scene-setting? A sentence that only gestures at a topic without a concrete, checkable detail does NOT count, even if it sounds specific.
 
-Respond with ONLY a JSON object with these exact keys: { "adds_new_information": true or false, "reason": "one sentence explaining your answer to question 1", "paragraph1_has_anchor_fact": true or false, "anchor_fact_reason": "one sentence explaining your answer to question 2" }`;
+3. Does the brief state or imply that one fact caused, prompted, drove, or is a consequence of another (phrasing like "X, despite Y," "Z, prompting speculation about W," "amid," "driving," "as a result of") in a way the source material above does NOT actually support?${causalNote} A real example that should be caught: source material stating only "The Bank of Japan hiked rates overnight; the move failed to halt the slide in the yen" got rewritten as the yen's slide "prompting speculation about further monetary easing" - invented, and backwards (a hike is tightening, not easing). Two real facts stated side by side with no causal word connecting them is NOT a violation - only flag an invented or unsupported CONNECTION between facts, not the facts themselves.
+
+4. Does the brief present two facts that a reasonably informed reader would see as counterintuitive or in tension with typical expectation (for example: a central bank raising rates while its currency weakens, which usually would be expected to strengthen it; a company's earnings beating estimates while its stock falls) WITHOUT acknowledging that tension anywhere, when the source material never explains the reason for it?${causalNote} A real example that should be caught: a brief stated a central bank raised rates and, separately, that the currency weakened right after - normally a rate rise would be expected to support the currency - with no acknowledgment anywhere that this was unexpected or unexplained, reading as confusing rather than reported. A brief that plainly states the source material didn't address the reason for the divergence (e.g. "the reason for this divergence wasn't addressed in the available coverage") satisfies this and should NOT be flagged - this question is about silence on a real tension, not about whether a cause was given. Do not flag two facts that are not actually in tension with ordinary expectation - only flag a genuine, noticeable divergence left completely unacknowledged.
+
+Respond with ONLY a JSON object with these exact keys: { "adds_new_information": true or false, "reason": "one sentence explaining your answer to question 1", "paragraph1_has_anchor_fact": true or false, "anchor_fact_reason": "one sentence explaining your answer to question 2", "unsupported_causal_claim": true or false, "causal_claim_reason": "one sentence explaining your answer to question 3", "unacknowledged_divergence": true or false, "divergence_reason": "one sentence explaining your answer to question 4" }`;
+}
+
+// Analysis-only independent verification, added after auditPublishedAnalysis.js
+// found a real, confirmed gap the deterministic similarity check
+// (findAnalysisSimilarityMismatch, runAnalysis.js) structurally can't
+// close - see ANALYSIS_FRESHNESS_CHECK_FIELDS in schemas.js for the full
+// real-regression writeup (articles 281/285/301). This is a single narrow
+// question, not folded into buildRedundancyCheckPrompt above, because the
+// inputs don't fit that shape (whole body vs. a whole prior article, not
+// three paragraphs of the same draft) and because news articles (which
+// also use that prompt) have no "prior article about this recurring
+// instrument" to compare against.
+// First version of this prompt (no allowlist below) was tested against
+// the real published backlog via auditPublishedAnalysis.js and was WAY
+// too broad: it flagged 23 of 24 real article pairs, the overwhelming
+// majority for things like "restates the support level of $75,590.24" or
+// "repeats the current price... presenting it as a new fact despite the
+// underlying situation remaining largely unchanged" - but price/support/
+// resistance/RSI/trend are the article's REQUIRED payload (buildAnalysisPrompt
+// demands them every single time), and runAnalysisScan() already only
+// generates a new piece when movedMeaningfully() says the numbers changed
+// enough to matter - so a genuinely unchanged support/resistance level (a
+// 14-day window that doesn't shift every single day even when price does)
+// or a trend that's still bullish is CORRECT reporting, not staleness. If
+// this had shipped as written, it would have retried or flagged nearly
+// every real Analysis article ever generated. The explicit allowlist
+// below is what's different in this version - confirmed by re-running the
+// same real backlog afterward: it stopped flagging the core-figures noise
+// while still catching the two real cases (articles 285/301) that
+// motivated this check in the first place.
+export function buildAnalysisFreshnessCheckPrompt({ body, priorArticleBody }) {
+  return `You are checking a financial analysis brief for stale, recycled NARRATIVE content before it publishes - not for repeated numbers.
+
+Today's draft:
+${body}
+
+The last published analysis for this same instrument:
+${priorArticleBody}
+
+Do NOT flag any of the following even if they exactly match the prior piece - these are the article's required, always-restated data points, not a freshness problem: the current price, the support level, the resistance level, the RSI value, or the trend direction (bullish/bearish). A new piece is only generated when these numbers moved enough to matter, so an unchanged support/resistance level or an unchanged trend is CORRECT, current reporting, never staleness - only a NUMBER THAT'S FACTUALLY WRONG is a problem, and that's a different check's job, not this one.
+
+Question: does today's draft restate a NARRATIVE claim, statistic, or quote about outside context (news coverage, analyst commentary, an institutional trend, a named outlet's reporting) from the prior piece above - in different words, without saying so - as if it were newly learned, when that context hasn't materially changed? A real example that should be caught: one piece said "CoinDesk reports that despite a 1.5% decline in September, Bitcoin is on track for its first quarterly gain in a year" and a later piece about the same instrument said "recent coverage emphasizes Bitcoin's resilience... with reports highlighting its potential for a quarterly gain" - same underlying narrative fact, reworded, presented fresh both times with no acknowledgment it was already reported. Restating a fact that is EXPLICITLY marked as prior context ("as previously reported," "as noted last time") is NOT a violation - only flag a repeated NARRATIVE claim presented as if it were newly learned.
+
+Respond with ONLY a JSON object with these exact keys: { "restates_stale_fact": true or false, "reason": "one sentence explaining your answer, naming the specific repeated narrative claim if true" }`;
 }
 
 // Evergreen SEO refresh (glossary entries + static pages) - see

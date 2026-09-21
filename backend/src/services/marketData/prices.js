@@ -13,8 +13,26 @@ import { getTwelveDataQuote } from "./twelveData.js";
 const COINGECKO = "https://api.coingecko.com/api/v3";
 const ALPHA_VANTAGE = "https://www.alphavantage.co/query";
 
-async function getJson(url) {
-  const res = await fetch(url);
+// COINGECKO_API_KEY (optional, .env.example) - CoinGecko's free "Demo" tier
+// key. Added after this project repeatedly hit real HTTP 429s on the
+// keyless public endpoint during live verification batches (documented
+// multiple times in this engagement - CoinGecko consistently rate-limited
+// after roughly 5 rapid successive calls). CoinGecko's Demo plan is still
+// free but raises that to 100 calls/min plus a ~10,000/month credit cap,
+// with zero code change needed beyond dropping the key into .env - this
+// header is added automatically once it's present, and every existing
+// CoinGecko call already routes through this one getJson() helper.
+// Alpha Vantage requests (also routed through getJson) are unaffected -
+// the header is only attached when the URL is actually a CoinGecko one.
+// Exported (unlike every other private helper in this file) solely so
+// prices.test.js can verify the COINGECKO_API_KEY header logic against a
+// stubbed fetch, without making a real network call or needing a real key.
+export async function getJson(url) {
+  const headers = {};
+  if (url.startsWith(COINGECKO) && process.env.COINGECKO_API_KEY) {
+    headers["x-cg-demo-api-key"] = process.env.COINGECKO_API_KEY;
+  }
+  const res = await fetch(url, { headers });
   if (!res.ok) throw new Error(`Request to ${url} failed: ${res.status}`);
   return res.json();
 }
@@ -488,14 +506,39 @@ export function relativeStrengthIndex(values, period = 14) {
 
 // Shared by getMarketSnapshot() (crypto, below) and getCachedTechnicalSnapshot()
 // (gold/WTI/SPY, above) so both produce the exact same shape from an
-// ascending closes array.
-function computeSnapshotFromCloses(symbol, closes, assetClass) {
+// ascending closes array. Exported (like simpleMovingAverage/
+// relativeStrengthIndex below) so the support/resistance regression this
+// function was patched for is directly testable against a synthetic
+// closes array, not just observable in real generated output.
+export function computeSnapshotFromCloses(symbol, closes, assetClass) {
   const ma50 = simpleMovingAverage(closes, Math.min(50, closes.length));
   const rsi14 = relativeStrengthIndex(closes, 14);
   const currentPrice = closes[closes.length - 1];
-  const recentWindow = closes.slice(-14);
-  const support = Math.min(...recentWindow);
-  const resistance = Math.max(...recentWindow);
+  // Excludes today's own close from the window - real regression: this
+  // used to be closes.slice(-14), which includes today, so on any day
+  // that's a new 14-day high (i.e. whenever "Bullish" - price above its
+  // 50-day MA - is true, which is most of the time in an uptrend),
+  // resistance is mathematically FORCED to equal currentPrice, because
+  // today's own close is the max of its own window. Support has the same
+  // problem symmetrically on new 14-day lows. Real published Analysis
+  // output from this: "the current price is at the resistance level of
+  // $X... a break above this resistance could signal further bullish
+  // momentum" - circular, since $X was defined BY today's price, not an
+  // independent level. Computing the window from the 14 closes BEFORE
+  // today means a new high/low is instead reported as breaking a real
+  // prior level (currentPrice landing above resistance/below support),
+  // which is meaningful, not self-referential - findAnalysisDistanceMismatch
+  // (runAnalysis.js) already computes its "X% away" arithmetic with
+  // Math.abs(), so it stays correct whether price sits inside or outside
+  // this range. support <= resistance always holds (both come from the
+  // same window), so there's no wrong-order case to guard against
+  // separately - the one edge case this doesn't fully eliminate is
+  // genuinely flat/stale source data (several days at the exact same
+  // price), which is a data-quality problem upstream of this function,
+  // not this bug.
+  const priorWindow = closes.length > 1 ? closes.slice(-15, -1) : closes;
+  const support = Math.min(...priorWindow);
+  const resistance = Math.max(...priorWindow);
 
   return {
     symbol,

@@ -22,6 +22,7 @@ import adminUsageRoutes from "./routes/admin/usage.js";
 import adminGlossaryRoutes from "./routes/admin/glossary.js";
 import adminCalendarRoutes from "./routes/admin/calendar.js";
 import adminPollsRoutes from "./routes/admin/polls.js";
+import adminContentAuditRoutes from "./routes/admin/contentAudit.js";
 import { requireAdmin } from "./middleware/adminAuth.js";
 import { startScheduler } from "./jobs/scheduler.js";
 
@@ -52,6 +53,7 @@ app.use("/api/admin/seo", requireAdmin, adminSeoRoutes);
 app.use("/api/admin/usage", requireAdmin, adminUsageRoutes);
 app.use("/api/admin/glossary", requireAdmin, adminGlossaryRoutes);
 app.use("/api/admin/calendar", requireAdmin, adminCalendarRoutes);
+app.use("/api/admin/content-audit", requireAdmin, adminContentAuditRoutes);
 // Bare "/api/admin" prefix, not its own "/api/admin/polls" one - this
 // router needs two different real prefixes (/api/admin/polls/... and
 // /api/admin/settings/poll-widget), see routes/admin/polls.js's top

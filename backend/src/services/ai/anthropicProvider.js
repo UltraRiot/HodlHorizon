@@ -1,7 +1,7 @@
 // Talks to Anthropic's Messages API directly over fetch. Requires
 // ANTHROPIC_API_KEY in backend/.env.
-import { buildArticlePrompt, buildGlossaryPrompt, buildAnalysisPrompt, buildSeoRefreshPrompt, buildRedundancyCheckPrompt } from "./prompts.js";
-import { ARTICLE_FIELDS, NEWS_ARTICLE_FIELDS, GLOSSARY_FIELDS, SEO_REFRESH_FIELDS, REDUNDANCY_CHECK_FIELDS } from "./schemas.js";
+import { buildArticlePrompt, buildGlossaryPrompt, buildAnalysisPrompt, buildSeoRefreshPrompt, buildRedundancyCheckPrompt, buildAnalysisFreshnessCheckPrompt } from "./prompts.js";
+import { ARTICLE_FIELDS, NEWS_ARTICLE_FIELDS, GLOSSARY_FIELDS, SEO_REFRESH_FIELDS, REDUNDANCY_CHECK_FIELDS, ANALYSIS_FRESHNESS_CHECK_FIELDS } from "./schemas.js";
 
 // Rough, approximate pricing (Claude Haiku-class model) for the cost tracker.
 const PRICE_PER_1K_INPUT_TOKENS = 0.0008;
@@ -67,9 +67,9 @@ async function callAnthropic(prompt, fields, toolName) {
   return { parsed, tokensEstimate, costEstimateUsd };
 }
 
-export async function anthropicGenerateArticle(items, previousCoverage, correctionNote) {
+export async function anthropicGenerateArticle(items, previousCoverage, correctionNote, paragraph2Directive, isThinSource) {
   const { parsed, tokensEstimate, costEstimateUsd } = await callAnthropic(
-    buildArticlePrompt(items, previousCoverage, correctionNote),
+    buildArticlePrompt(items, previousCoverage, correctionNote, paragraph2Directive, isThinSource),
     NEWS_ARTICLE_FIELDS,
     "submit_article"
   );
@@ -103,11 +103,20 @@ export async function anthropicGenerateSeoRefresh({ label, body }) {
   return { ...parsed, tokensEstimate, costEstimateUsd };
 }
 
-export async function anthropicCheckRedundancy({ paragraph1, paragraph2, paragraph3 }) {
+export async function anthropicCheckRedundancy({ paragraph1, paragraph2, paragraph3, sourceText }) {
   const { parsed, tokensEstimate, costEstimateUsd } = await callAnthropic(
-    buildRedundancyCheckPrompt({ paragraph1, paragraph2, paragraph3 }),
+    buildRedundancyCheckPrompt({ paragraph1, paragraph2, paragraph3, sourceText }),
     REDUNDANCY_CHECK_FIELDS,
     "submit_redundancy_check"
+  );
+  return { ...parsed, tokensEstimate, costEstimateUsd };
+}
+
+export async function anthropicCheckAnalysisFreshness({ body, priorArticleBody }) {
+  const { parsed, tokensEstimate, costEstimateUsd } = await callAnthropic(
+    buildAnalysisFreshnessCheckPrompt({ body, priorArticleBody }),
+    ANALYSIS_FRESHNESS_CHECK_FIELDS,
+    "submit_analysis_freshness_check"
   );
   return { ...parsed, tokensEstimate, costEstimateUsd };
 }

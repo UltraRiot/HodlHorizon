@@ -4,6 +4,7 @@
 import { Router } from "express";
 import { query } from "../db.js";
 import { perIpPerResourceLimiter } from "../middleware/rateLimit.js";
+import { HIDDEN_CATEGORY_SLUGS } from "../services/shared/articleUtils.js";
 
 const router = Router();
 const reactionLimiter = perIpPerResourceLimiter({ max: 5 });
@@ -24,6 +25,15 @@ router.get("/", async (req, res) => {
   if (category && category !== "all") {
     params.push(category);
     where += ` AND c.slug = $${params.length}`;
+  } else {
+    // The "all"/unspecified case is the homepage's generic feed - exclude
+    // hidden categories (Analysis) from it so hiding the nav link actually
+    // hides the content, not just the way to browse to it. An explicit
+    // ?category=analysis request still works unfiltered (existing
+    // permalinks/direct links must keep working per the "fully
+    // reversible, nothing deleted" requirement).
+    params.push(HIDDEN_CATEGORY_SLUGS);
+    where += ` AND c.slug != ALL($${params.length}::text[])`;
   }
   params.push(limit, offset);
 
@@ -53,9 +63,11 @@ router.get("/most-read", async (req, res) => {
      JOIN articles a ON a.id = v.article_id
      JOIN categories c ON c.id = a.category_id
      WHERE v.viewed_at >= now() - interval '24 hours' AND a.status = 'published'
+       AND c.slug != ALL($1::text[])
      GROUP BY a.id, a.slug, a.title, c.slug, c.name
      ORDER BY views DESC
-     LIMIT 5`
+     LIMIT 5`,
+    [HIDDEN_CATEGORY_SLUGS]
   );
   res.json(rows);
 });

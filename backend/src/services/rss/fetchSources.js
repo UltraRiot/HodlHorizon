@@ -7,10 +7,15 @@ import { query } from "../../db.js";
 // Some feeds (Mining.com's Cloudflare/CloudFront-fronted one among them)
 // 403 any request with no User-Agent or a generic one - a plain browser UA
 // clears it without needing anything feed-specific.
+// Accept: */* added for the EIA feed (source-diversity review) - it 406s
+// any request without an explicit Accept header, even with a real
+// browser User-Agent; */* is maximally permissive so it can't break any
+// other feed's response.
 const parser = new Parser({
   timeout: 10000,
   headers: {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "*/*",
   },
 });
 

@@ -69,6 +69,22 @@ export function mockCheckRedundancy() {
     reason: "Mock check always passes.",
     paragraph1_has_anchor_fact: true,
     anchor_fact_reason: "Mock check always passes.",
+    unsupported_causal_claim: false,
+    causal_claim_reason: "Mock check always passes.",
+    unacknowledged_divergence: false,
+    divergence_reason: "Mock check always passes.",
+    tokensEstimate: 0,
+    costEstimateUsd: 0,
+  };
+}
+
+// Always passes, same reasoning as mockCheckRedundancy above - mock has no
+// real content understanding, and this check only ever runs for real
+// providers anyway (see provider.js).
+export function mockCheckAnalysisFreshness() {
+  return {
+    restates_stale_fact: false,
+    reason: "Mock check always passes.",
     tokensEstimate: 0,
     costEstimateUsd: 0,
   };
