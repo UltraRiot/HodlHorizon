@@ -27,7 +27,7 @@ async function seedCategories() {
 }
 
 async function seedSources() {
-  // Public RSS feeds, one category each (see ai-content-quality-spec.md) -
+  // Public RSS feeds, one category each -
   // add/remove more later from the admin Feeds page without touching code.
   //
   // Feed URLs change. Reuters and Bloomberg both stopped offering public RSS

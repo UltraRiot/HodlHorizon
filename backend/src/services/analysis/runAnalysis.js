@@ -1,4 +1,4 @@
-// The Analysis job (spec section 4) - completely separate from the news
+// The Analysis job - completely separate from the news
 // scanner. Runs on a fixed watchlist, pulls real computed technicals
 // (trend, RSI, support/resistance from getMarketSnapshot()), and only
 // writes a new article for an asset when its numbers moved meaningfully

@@ -5,7 +5,39 @@ import Footer from "../../components/Footer";
 import ReactionButtons from "../../components/ReactionButtons";
 import { apiGet } from "../../lib/api";
 
-export async function getServerSideProps({ params }) {
+// ISR, not SSR: every reader hit used to do a full server round-trip for
+// content that's the same for every visitor (no cookies, no per-visitor
+// branching). Articles publish continuously though - the delayed
+// auto-publish path alone (backend/src/services/rss/scanAndGenerate.js)
+// adds new slugs every day - so this can't use fallback: false with a
+// fixed paths list the way a handful of legal pages can; anything
+// published after the last build still needs to resolve.
+export async function getStaticPaths() {
+  let articles = [];
+  try {
+    // Reuses the same endpoint the real /sitemap.xml already calls for
+    // exactly this "every published slug" list - no new backend endpoint
+    // needed for something that already exists.
+    const data = await apiGet("/api/sitemap-data");
+    articles = data.articles || [];
+  } catch (err) {
+    articles = []; // build-time fetch failure - every path just falls through to the fallback below instead of failing the build
+  }
+  return {
+    paths: articles.map((a) => ({ params: { slug: a.slug } })),
+    // 'blocking' (not 'true' + a loading state): a story published after
+    // the last build renders once on that first request (like the old
+    // getServerSideProps did for every request) and is then cached like
+    // every other page - there's nothing meaningfully faster to show in a
+    // loading skeleton than the article itself, which is what the visitor
+    // actually came for. Not 'false': that would 404 every article
+    // published since the last build, which given continuous publishing
+    // would be a real, frequent regression, not an edge case.
+    fallback: "blocking",
+  };
+}
+
+export async function getStaticProps({ params }) {
   let article;
   try {
     article = await apiGet(`/api/articles/${params.slug}`);
@@ -35,7 +67,17 @@ export async function getServerSideProps({ params }) {
     related = [];
   }
 
-  return { props: { article, related } };
+  return {
+    props: { article, related },
+    // 60s, matching pages/index.js's own ISR pattern - deliberate
+    // freshness-vs-load tradeoff, not an oversight: bullish/bearish/
+    // neutral vote counts live on this same articles row and change after
+    // publish (ReactionButtons posts to /api/articles/:id/react), so a
+    // longer revalidate would let those counts look visibly frozen. 60s
+    // keeps them close to live while still turning "every reader hit" into
+    // "at most one origin render per minute per article."
+    revalidate: 60,
+  };
 }
 
 export default function ArticlePage({ article, related }) {

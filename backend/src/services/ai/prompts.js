@@ -2,7 +2,7 @@
 // in one file means changing the site's tone means editing one paragraph,
 // not hunting through every provider file.
 //
-// This version (see ai-content-quality-spec.md) is deliberately strict: hard
+// This version is deliberately strict: hard
 // word/paragraph limits, a banned-word list, and no em dashes. Loose
 // adjectives like "professional but human" don't reliably change model
 // output - hard rules and the few-shot examples at the bottom of
@@ -197,7 +197,7 @@ function buildAnalysisOutline(hasCoverage, hasCalendar) {
   return steps.join("\n");
 }
 
-// Analysis briefs (spec section 4/5.2): narrate computed technical numbers,
+// Analysis briefs: narrate computed technical numbers,
 // never headlines. Called by the separate Analysis job
 // (services/analysis/runAnalysis.js), never by the news scanner.
 //

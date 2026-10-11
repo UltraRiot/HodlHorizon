@@ -1,214 +1,146 @@
 # Hodl Horizon
 
-A crypto and finance news site: an Express + PostgreSQL backend, a Next.js
-frontend, and an AI engine that scans RSS sources and writes short,
-factual news summaries automatically.
+Crypto and markets news site. It scans RSS feeds, groups related
+headlines into stories, writes short news briefs, and publishes daily
+technical analysis built from live market data.
 
-The code is written to be simple to read: plain JavaScript (no
-TypeScript), plain SQL (no ORM), one small file per feature. Every file
-has a short comment at the top explaining what it does.
+- **backend/**: Express API, PostgreSQL, scheduled jobs (feed scanning,
+  analysis, market-data refresh, maintenance)
+- **frontend/**: Next.js public site and admin panel
 
-## How it's organized
-
-```
-hodlhorizon/
-  backend/     Express API + PostgreSQL + the AI engine
-  frontend/    Next.js website (public site + admin panel)
-```
-
-The two run as separate processes and talk to each other over HTTP -
-that's the "separated backend and frontend" you asked for. In production
-you'd deploy them as two services (e.g. two apps on Render/Railway, or a
-VM running both with a process manager).
+Plain JavaScript and plain SQL, with no TypeScript and no ORM.
 
 ## Requirements
 
-- Node.js 18 or newer
-- PostgreSQL (14+)
+- Node.js 18+
+- PostgreSQL 14+
 
-## 1. Set up the database
+## Getting started
+
+### Database
 
 ```
-createuser hodlhorizon --pwprompt      # set the password to "hodlhorizon", or your own
+createuser hodlhorizon --pwprompt
 createdb hodlhorizon --owner hodlhorizon
 ```
 
-## 2. Set up the backend
+### Backend
 
 ```
 cd backend
-cp .env.example .env       # then open .env and check the values
+cp .env.example .env
 npm install
-npm run migrate            # creates all tables
-npm run seed                # creates categories, sample sources, your admin login, a sample poll
-npm run dev                  # starts the API on http://localhost:4000
+npm run migrate
+npm run seed
+npm run dev        # http://localhost:4000
 ```
 
-Your admin login is whatever you set `ADMIN_EMAIL` / `ADMIN_PASSWORD` to
-in `.env` before running `npm run seed` (defaults to
-`admin@hodlhorizon.com` / `change-this-password` - change this).
+`npm run seed` creates the categories, the default RSS sources, a sample
+poll, and an admin account from `ADMIN_EMAIL` / `ADMIN_PASSWORD`.
 
-## 3. Set up the frontend
-
-In a second terminal:
+### Frontend
 
 ```
 cd frontend
 cp .env.example .env.local
 npm install
-npm run dev                  # starts the site on http://localhost:3000
+npm run dev        # http://localhost:3000
 ```
 
-Visit `http://localhost:3000` for the public site and
-`http://localhost:3000/admin/login` for the admin panel.
+The admin panel is at `/admin/login`.
 
-## 4. Turn on real AI writing (optional but recommended)
+### Tests
 
-Out of the box, `AI_PROVIDER=mock` in `backend/.env` - the pipeline runs
-end to end for free, but writes clearly-labelled placeholder articles
-instead of real ones. To get real writing:
+```
+cd backend
+npm test
+```
 
-1. Get an API key from OpenAI or Anthropic.
-2. In `backend/.env`, set `AI_PROVIDER=openai` (or `anthropic`) and paste
-   your key into `OPENAI_API_KEY` (or `ANTHROPIC_API_KEY`).
-3. Restart the backend.
+## Configuration
 
-The voice/tone every article is written in ("professional financial
-journalist, human, not robotic") lives in one file:
-`backend/src/services/ai/prompts.js` - edit that paragraph any time you
-want to adjust the style.
+All backend settings live in `backend/.env`. `backend/.env.example`
+documents each variable. The main groups are:
 
-## 5. Trigger your first scan
+| Area | Variables |
+| --- | --- |
+| Database / server | `DATABASE_URL`, `PORT`, `FRONTEND_URL` |
+| Admin auth | `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `JWT_SECRET` |
+| Content generation | `AI_PROVIDER` (`mock` by default, needs no key), plus the matching API key and model |
+| Scheduling | `SCAN_INTERVAL_MINUTES`, `AUTO_PUBLISH_MIN_SOURCES`, `ANALYSIS_INTERVAL_HOURS` |
+| Market data | `TWELVEDATA_API_KEY`, `STOCKS_DATA_API_KEY`, `COINGECKO_API_KEY` (optional), `MARKET_DATA_DRY_RUN` |
+| Alert emails | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `ADMIN_ALERT_EMAIL` |
 
-The AI engine runs automatically every `SCAN_INTERVAL_MINUTES` (default
-15), or you can trigger it immediately from **Admin → AI Engine → "Scan
-sources now"**.
+Frontend settings (`frontend/.env.local`): `NEXT_PUBLIC_API_URL`,
+`NEXT_PUBLIC_SITE_URL`, and `NEXT_PUBLIC_PLAUSIBLE_DOMAIN` (optional
+analytics).
 
-It works like this: it fetches every active RSS feed (manage these under
-**Admin → Feeds**), groups headlines that look like the same story, and
-writes one article per story. If **2 or more independent sources**
-report the same story, it's published immediately; if only one source
-has it (and it passes the automated checks), it's saved as "Scheduled"
-instead and auto-publishes on its own after `auto_publish_delay_hours`
-(default 5h) - check **Admin → Articles** during that window if you want
-to hold, edit, or delete it first. Anything that trips a check (a
-category mismatch, an implausible price, a failed AI self-review) goes
-to plain "In Review" instead, with no timer, and needs a human to
-publish it. Change the "2 or more" threshold with
-`AUTO_PUBLISH_MIN_SOURCES` in `backend/.env`, and turn auto-publish off
-entirely from **Admin → AI Engine**.
+`MARKET_DATA_DRY_RUN=true` is the default in development, so local runs
+don't use up real API quota.
 
-The moment a story is saved as "Scheduled," `services/notifications/mailer.js`
-sends an email to `ADMIN_ALERT_EMAIL` with the title, category, the single
-source it was built from, a link straight to it in the admin panel, and the
-exact time it auto-publishes - so that review window is something you'll
-actually notice, not a silent timer. It needs `SMTP_HOST`, `SMTP_PORT`,
-`SMTP_USER`, `SMTP_PASS`, and `ADMIN_ALERT_EMAIL` in `backend/.env` (see
-`backend/.env.example`); a Gmail account with an
-[app password](https://myaccount.google.com/apppasswords) is the simplest
-zero-new-signup option (`SMTP_HOST=smtp.gmail.com`, `SMTP_PORT=587`), though
-the mailer is provider-agnostic - any SMTP relay (SendGrid, Mailgun,
-Postmark, AWS SES, ...) works by changing just those four values. Leave
-`ADMIN_ALERT_EMAIL` blank to disable this entirely - it's logged once, not
-an error, and nothing else about scheduling or auto-publishing depends on
-the email actually sending.
+## How publishing works
 
-## What's real vs. what's a starting point
+1. Every `SCAN_INTERVAL_MINUTES`, the scanner fetches all active feeds.
+   You manage feeds under **Admin → Feeds**, and each feed belongs to
+   exactly one category.
+2. Headlines about the same event are grouped into a single story
+   (`backend/src/services/rss/grouping.js`).
+3. The scanner writes a brief for each new story and checks it for
+   category mismatches, implausible prices, stale content, and redundancy.
+4. Each brief then gets one of three statuses:
+   - **Published** right away if `AUTO_PUBLISH_MIN_SOURCES` or more
+     independent sources report the story and every check passes.
+   - **Scheduled** if only one source reports it and every check passes.
+     It auto-publishes after the review window (default 5h), and an alert
+     email goes to `ADMIN_ALERT_EMAIL`.
+   - **In Review** if any check fails. It waits for manual approval in
+     **Admin → Articles**.
 
-Being upfront about this so nothing surprises you later:
+The Analysis job runs separately every `ANALYSIS_INTERVAL_HOURS`. It
+writes analysis from computed trend, RSI, and support/resistance values,
+and only when an asset has actually moved.
 
-- **Crypto prices, movers, and the Market Snapshot (trend/RSI/support/
-  resistance)** are fully real, computed from CoinGecko's free public
-  API - no key needed.
-- **Stocks/indices/commodities prices are real, never sample data** - each
-  asset class is fetched on a schedule (never live per page load) from
-  whichever provider actually covers it, and is simply omitted (not
-  padded with a placeholder) if that provider's key is missing or a fetch
-  fails:
-  - SPY/QQQ (S&P 500 / Nasdaq 100 ETF proxies) - Twelve Data, needs
-    `TWELVEDATA_API_KEY`, refreshed hourly.
-  - Gold (via the GLD ETF proxy) and WTI crude - Alpha Vantage, needs
-    `STOCKS_DATA_API_KEY`, quotes refreshed every 8h and history once a day.
-  - The Markets Overview strip's other columns (indices/forex/commodities/
-    stocks) also use `STOCKS_DATA_API_KEY` - see
-    `backend/src/services/marketData/overviewCache.js`.
-  See `backend/.env.example` for the exact budget math on both keys.
-  Set `MARKET_DATA_DRY_RUN=true` in your local `.env` during development
-  so testing the market-data pipeline never spends the production site's
-  real daily quota - it's the default in `backend/.env.example`, so a
-  fresh local checkout is dry-run out of the box.
-  On top of that, use your own separate `STOCKS_DATA_API_KEY` locally - a
-  second, free Alpha Vantage account/key, distinct from whatever key
-  production uses - rather than pointing your local `.env` at the live
-  site's key. `STOCKS_DATA_API_KEY` is the one variable name the code
-  actually reads for Alpha Vantage everywhere (the Overview strip, the
-  scheduled Gold/WTI job); there is no separate `ALPHAVANTAGE_API_KEY` in
-  code, so don't use that name for the local key either. With your own key
-  in place, even a `MARKET_DATA_DRY_RUN` slip on your machine burns a
-  throwaway key's 25/day quota instead of the live site's.
-- **The economic calendar** is a simple table you (or the admin panel)
-  add events to by hand. Free calendar APIs with real-time economic
-  events are rare - a paid one (e.g. Trading Economics) could feed this
-  table automatically later.
-- **RSS sources** ship with three examples (CoinDesk, CoinTelegraph,
-  Investing.com). Add, disable, or remove sources anytime from
-  **Admin → Feeds** - no code changes needed.
-- **The "2+ sources agree" duplicate-detection** compares headline word
-  overlap. It's simple on purpose (so you can read and tune it in
-  `backend/src/services/rss/grouping.js`) rather than a black-box ML
-  model.
+## Market data
 
-## Everything from our conversation, and where it lives
+- **Crypto:** CoinGecko (works without a key; a free Demo key raises the
+  rate limit)
+- **Indices, gold, forex, stocks:** Twelve Data
+- **WTI, Brent, natural gas:** Alpha Vantage
 
-- **English site, no user accounts, no comments** — done throughout.
-- **Feeds/likes/polls/AI articles stored in PostgreSQL** — see
-  `backend/src/migrations/001_init.sql`.
-- **Admin panel to manage feeds and the AI** — `/admin` (Feeds, Articles,
-  AI Engine, SEO, Calendar, Glossary).
-- **No images in articles** — the article template never renders one.
-- **Price/technical analysis for traders** — the homepage's Market
-  Snapshot widget and the "Analysis" category.
-- **Human-but-professional AI tone** — `backend/src/services/ai/
-  prompts.js`.
-- **OpenAI credit usable here** — yes; see step 4 above. The provider
-  layer (`backend/src/services/ai/`) is written so OpenAI and Anthropic
-  are interchangeable by one `.env` line, and every call is logged to
-  the database so **Admin → AI Engine** shows a running cost estimate.
-- **Richer-than-CryptoPanic feed cards, full article on click, sources
-  cited** — the homepage feed and article page.
-- **Learn/glossary section (SEO long-tail content)** — `/learn`,
-  managed from **Admin → Glossary**.
-- **Sitemap, robots.txt, JSON-LD structured data, per-article SEO
-  title/description** — `frontend/pages/sitemap.xml.js`,
-  `frontend/public/robots.txt`, and the `<script type="application/
-  ld+json">` block on every article page.
-- **Fact-check-ish editorial rule** (2+ sources publish immediately;
-  1 source publishes after a timed review window instead of instantly) —
-  `backend/src/services/rss/scanAndGenerate.js`.
-- **AI cost tracker** — **Admin → AI Engine**, backed by
-  `ai_usage_log`.
-- **Privacy-friendly, cookieless analytics** — set
-  `NEXT_PUBLIC_PLAUSIBLE_DOMAIN` in `frontend/.env.local`; leave it
-  blank and nothing loads.
-- **Affiliate disclosure, Privacy, Terms, About/Contact pages** —
-  `/disclosure`, `/privacy`, `/terms`, `/about`, `/contact`.
-- **Bullish/bearish/neutral reactions on articles** — replaces a plain
-  "like" button with something more useful for a trading audience.
-- **Crypto top movers widget** — homepage sidebar.
-- **Economic calendar widget** — homepage sidebar, managed from
-  **Admin → Calendar**.
+Data is refreshed on a schedule, not on each page load. If a provider key
+is missing or a request fails, that instrument is hidden rather than shown
+with placeholder data.
 
-## Before this goes live
+## Admin panel
 
-A few things worth doing that are outside what code can do for you:
+| Page | Purpose |
+| --- | --- |
+| Articles | Review, edit, schedule, publish, or delete articles |
+| Feeds | Add, disable, or remove RSS sources |
+| Engine | Run a scan manually, set daily caps, toggle auto-publish, see usage and costs |
+| SEO | Per-article titles/descriptions and evergreen refreshes |
+| Calendar | Economic calendar events |
+| Glossary | Entries for the `/learn` section |
+| Polls | Homepage polls |
 
-- Have a lawyer (or at least a template service aimed at your
-  jurisdiction) review the Privacy Policy and Terms pages - the ones
-  shipped here are clearly-marked drafts, not legal advice.
-- Pick a real hosting setup for two services + a database (e.g. a small
-  VM, or Railway/Render for both apps plus a managed Postgres).
-- Set a strong, unique `JWT_SECRET` and admin password in production -
-  don't reuse the example values.
-- If you ever add display ads (which usually set their own cookies),
-  update the Privacy Policy and add a cookie consent banner at that
-  point - not needed yet, since nothing here sets tracking cookies.
+## Project layout
+
+```
+backend/src/
+  routes/          public and admin API routes
+  services/        rss, analysis, marketData, seo, audit, notifications, ...
+  jobs/            scheduler
+  migrations/      numbered SQL migrations (npm run migrate)
+frontend/
+  pages/           public pages, /learn, /article, /admin
+  components/      shared UI
+  lib/             API client and helpers
+```
+
+## Deployment checklist
+
+- Set a strong `JWT_SECRET` and admin password.
+- Set `MARKET_DATA_DRY_RUN=false` and provide real market-data keys.
+- Set `NEXT_PUBLIC_SITE_URL` to the production domain.
+- Have the Privacy Policy and Terms pages reviewed for your jurisdiction.
+- If you add ads or anything else that sets cookies, update the Privacy
+  Policy and add a consent banner.

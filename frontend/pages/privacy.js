@@ -7,13 +7,18 @@ const FALLBACK_TITLE = "Privacy Policy | Hodl Horizon";
 const FALLBACK_DESCRIPTION =
   "Hodl Horizon's privacy policy: what data we collect (none required to read the site), how our cookieless analytics works, and your rights as a visitor here.";
 
-export async function getServerSideProps() {
+// ISR, not SSR - see about.js's getStaticProps comment for why this uses
+// revalidate: 86400 rather than a plain no-revalidate build (the evergreen
+// SEO refresh job can change this page's title/description on its own
+// 24h schedule, independent of any request).
+export async function getStaticProps() {
   const seo = await apiGet("/api/pages/privacy/seo").catch(() => null);
   return {
     props: {
       seoTitle: seo?.seo_title || FALLBACK_TITLE,
       seoDescription: seo?.seo_description || FALLBACK_DESCRIPTION,
     },
+    revalidate: 86400,
   };
 }
 

@@ -28,3 +28,37 @@ export function perIpPerResourceLimiter({ max }) {
     },
   });
 }
+
+// Plain per-IP limiter - no :id/resource scoping, for a route where the
+// abuse target is the ROUTE itself rather than a specific record (the
+// motivating case: POST /api/admin/login had zero abuse protection at all,
+// unlike the poll-vote/reaction routes above, which perIpPerResourceLimiter
+// already covers). Same ipKeyGenerator requirement as above - express-rate-
+// limit normalizes/truncates IPv6 addresses for its own bucketing, and a
+// custom keyGenerator that uses req.ip without routing it through
+// ipKeyGenerator defeats that and throws in this version.
+//
+// Known limitation, stated plainly rather than silently assumed away: like
+// perIpPerResourceLimiter above, this keys on req.ip, which - with no
+// `app.set("trust proxy", ...)` configured in server.js - resolves to the
+// raw socket address. Deployed behind a reverse proxy/load balancer with
+// trust proxy left unset, every real visitor would collapse onto the
+// proxy's one IP, making this (and the existing resource limiter) key on a
+// single shared bucket instead of per real client. Not fixed here: whether
+// there IS a trusted proxy in front of this in production is a deployment
+// fact this codebase doesn't currently record, and blindly trusting
+// X-Forwarded-For without a real trusted proxy would let an attacker
+// spoof any IP and defeat rate limiting entirely - worse than the current
+// gap. Needs a real answer about the deployment topology, not a guess.
+export function perIpLimiter({ windowMs, max, message }) {
+  return rateLimit({
+    windowMs,
+    max,
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (req) => ipKeyGenerator(req.ip),
+    handler: (req, res) => {
+      res.status(429).json({ error: message || "Too many requests - please try again later." });
+    },
+  });
+}

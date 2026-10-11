@@ -11,13 +11,25 @@ const FALLBACK_DESCRIPTION = "How Hodl Horizon works, and how our AI writes the 
 // so a periodic AI refresh actually reaches the live page. The prose below
 // is untouched by that job either way - it only ever changes these two
 // meta fields, never the page content.
-export async function getServerSideProps() {
+// ISR, not SSR: the page body below is hardcoded (no per-request data at
+// all), and the only fetch is the SEO title/description. NOT converted to
+// a plain no-revalidate getStaticProps despite otherwise being "genuinely
+// static," because it isn't quite - the evergreen SEO refresh job
+// (services/seo/evergreenRefresh.js, checks every 24h per server.js) can
+// change page_seo's title/description on its own schedule, independent of
+// any request. A no-revalidate build would freeze whatever SEO copy
+// existed at build time until the next deploy, silently defeating that
+// job for however long that gap is. revalidate: 86400 matches the job's
+// own cadence instead - real subtlety, not the plain "nothing ever
+// changes here" case the other legal pages' own SEO fetch shares.
+export async function getStaticProps() {
   const seo = await apiGet("/api/pages/about/seo").catch(() => null);
   return {
     props: {
       seoTitle: seo?.seo_title || FALLBACK_TITLE,
       seoDescription: seo?.seo_description || FALLBACK_DESCRIPTION,
     },
+    revalidate: 86400,
   };
 }
 

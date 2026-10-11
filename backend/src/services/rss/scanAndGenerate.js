@@ -103,62 +103,13 @@ function latestPubDate(group) {
 // grouping, so a stale RSS entry (a feed re-publishing an old item, a
 // crawl backlog, a first-ever scan pulling a source's whole history) can
 // never become a new article. Exported so it's directly testable against a
-// crafted item, the same reason currentPacingCeiling() is exported below.
+// crafted item.
 export const FRESHNESS_WINDOW_HOURS = 72;
 
 export function filterFreshItems(items, now = new Date()) {
   const cutoff = now.getTime() - FRESHNESS_WINDOW_HOURS * 60 * 60 * 1000;
   const fresh = items.filter((i) => i.pubDate.getTime() >= cutoff);
   return { fresh, staleCount: items.length - fresh.length };
-}
-
-// Pacing ceiling: spreads a category's daily cap across the day instead of
-// letting it fill up entirely in the first peak window and go quiet for
-// hours. An algorithm parameter, not day-to-day tuning - hardcoded, not a
-// settings-table value like the caps it paces. Applies to every category,
-// Crypto included: the goal is the whole page feeling active around the
-// clock, not just gating market-hours categories.
-//
-// Each checkpoint's percentage takes effect starting at its hour and holds
-// until the next one - so "10:00 -> 35%" also governs 00:00-09:59 (there's
-// no earlier checkpoint to relax it), 17:00 raises it to 50% and holds
-// through 20:59, and 21:00's 90% holds through 23:59, deliberately leaving
-// 10% unused for the overnight stretch. articlesCreatedToday() resets at
-// UTC midnight, so the cycle restarts fresh each day.
-const PACING_CHECKPOINTS = [
-  { hour: 10, maxFraction: 0.35 },
-  { hour: 17, maxFraction: 0.5 },
-  { hour: 21, maxFraction: 0.9 },
-];
-
-export function currentPacingCeiling(cap, now = new Date()) {
-  const hour = now.getUTCHours();
-  const lastCheckpoint = PACING_CHECKPOINTS[PACING_CHECKPOINTS.length - 1];
-
-  let fraction = PACING_CHECKPOINTS[0].maxFraction;
-  for (const checkpoint of PACING_CHECKPOINTS) {
-    if (hour >= checkpoint.hour) fraction = checkpoint.maxFraction;
-  }
-
-  // Round rather than floor: floor was too aggressive for small caps (a
-  // weekday cap of 2 floored to 0 for the entire 35%/50% windows -
-  // 17 hours silent before the first article was even allowed). Round
-  // still holds back the 90% checkpoint's reserve correctly for normal
-  // caps (6 -> round(5.4) = 5, same as floor - the two agree whenever the
-  // fractional part is below .5), it just no longer collapses a cap of 2
-  // to 0 before 21:00 (round(2*0.35) = round(0.7) = 1).
-  const rawCeiling = Math.round(cap * fraction);
-
-  // Rounding alone still leaves a cap of 1 at 0 until the 50% checkpoint
-  // (round(1*0.35) = 0, round(1*0.5) = 1), so this safeguard - guarantee
-  // at least 1 slot for any nonzero cap once the final checkpoint's hour
-  // arrives - stays in place as a backstop, even though it's now mostly
-  // redundant (rounding alone already gets a cap of 1 to its ceiling of 1
-  // by 17:00, before the safeguard's 21:00 trigger would ever need to fire).
-  if (hour >= lastCheckpoint.hour && cap > 0) {
-    return Math.max(1, rawCeiling);
-  }
-  return rawCeiling;
 }
 
 // Price plausibility check (Crypto only): the AI has no live price feed -
@@ -650,24 +601,30 @@ export async function runScanAndGenerate() {
   const weekend = isWeekendUTC();
   const inPeakWindow = await isInsidePeakWindow();
 
+  // No hour-of-day/timezone pacing here on purpose - removed after a real
+  // freshness review (freshness-review-2026-09-20.md) found the pacing
+  // ceiling's reset clock (a Postgres session timezone, Europe/Berlin) and
+  // its own checkpoint clock (true UTC) disagreed by ~2 hours, causing
+  // every category to dump its whole daily cap in a ~60-second burst right
+  // after reset and then sit fully dark for the remaining ~23 hours -
+  // regardless of what was actually breaking. Publishing now runs purely
+  // on freshness + the plain daily cap below: a category publishes/
+  // schedules a story the moment it's grouped, fresh, and verification-
+  // clean - any hour, no artificial spacing - until that day's cap is
+  // used up, then it waits for the next real UTC day (see
+  // articlesCreatedToday()'s own UTC-explicit fix, articleUtils.js). Net
+  // effect, stated plainly rather than left as a surprise: a very newsy
+  // day can burn a whole day's cap in the first hour and go quiet for the
+  // rest of it. That's the deliberate tradeoff being made here - freshness
+  // wins over even distribution across the day - not an oversight.
   for (const category of categories) {
     const cap = weekend && WEEKEND_THROTTLED_CATEGORIES.has(category.slug)
       ? Number(await getSetting(`weekend_cap_${category.slug}`, DEFAULT_WEEKEND_CAPS[category.slug] ?? 1))
       : Number(await getSetting(`daily_cap_${category.slug}`, DEFAULT_DAILY_CAPS[category.slug] ?? 4));
 
-    // Pacing ceiling on top of the (possibly weekend-reduced) cap above -
-    // adds a limit, doesn't replace either existing mechanism.
-    const pacingCeiling = currentPacingCeiling(cap);
-    const effectiveCap = Math.min(cap, pacingCeiling);
-
     const usedToday = await articlesCreatedToday(category.id);
-    let remaining = effectiveCap - usedToday;
+    let remaining = cap - usedToday;
     if (remaining <= 0) {
-      if (pacingCeiling < cap) {
-        console.log(
-          `AI engine: ${category.slug} paced - checkpoint ceiling ${pacingCeiling}/${cap} reached for this hour (${usedToday} used today).`
-        );
-      }
       continue;
     }
 
@@ -768,7 +725,7 @@ export async function runScanAndGenerate() {
         continue;
       }
 
-      // Flagging only, per the spec: the source's assigned category stays
+      // Flagging only: the source's assigned category stays
       // the default/primary signal and category_id is never auto-changed
       // here. This just catches the exception case (e.g. a Treasury/bond
       // story that only landed in Crypto because it came from a

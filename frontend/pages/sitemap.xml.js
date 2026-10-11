@@ -67,6 +67,16 @@ export async function getServerSideProps({ res }) {
   ];
 
   res.setHeader("Content-Type", "application/xml");
+  // This route hand-writes its response via res.write/res.end (see this
+  // file's own top comment) rather than returning props, so it can't
+  // trivially become getStaticProps/ISR the way the other pages in this
+  // pass did. s-maxage lets a CDN/edge cache serve this for an hour without
+  // hitting this origin render again, and stale-while-revalidate lets it
+  // keep serving that cached copy while refreshing in the background
+  // instead of every visitor after the hour mark paying for a fresh
+  // /api/sitemap-data round-trip - most of ISR's benefit without
+  // restructuring the route.
+  res.setHeader("Cache-Control", "s-maxage=3600, stale-while-revalidate");
   res.write(buildXml(entries));
   res.end();
 

@@ -55,7 +55,7 @@ function utcDayStart(date) {
   return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
 }
 
-// Monday-Sunday week, per the spec. JS's getUTCDay() is 0=Sunday..6=Saturday;
+// Monday-Sunday week. JS's getUTCDay() is 0=Sunday..6=Saturday;
 // converting to 0=Monday..6=Sunday makes "days until next Monday" a plain
 // subtraction. When today IS Sunday, this correctly resolves to 1 (next
 // Monday is tomorrow), so "the rest of this week" is empty - Sunday has

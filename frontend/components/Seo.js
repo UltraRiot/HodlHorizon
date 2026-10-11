@@ -2,7 +2,7 @@ import Head from "next/head";
 
 // Centralizes what the audit found scattered or missing across
 // hand-rolled per-page <Head> blocks: title/description, a canonical
-// link, and OG/Twitter tags. Every page listed in this task's plan
+// link, and OG/Twitter tags. Every public page
 // renders this instead of its own <Head>, so a future page literally
 // cannot ship without a title, a description, and a canonical - see the
 // required-prop check below. (Viewport meta is deliberately NOT here -

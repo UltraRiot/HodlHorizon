@@ -3,10 +3,32 @@ import Header from "../../components/Header";
 import Footer from "../../components/Footer";
 import { apiGet } from "../../lib/api";
 
-export async function getServerSideProps({ params }) {
+// ISR, not SSR: no per-visitor data (no cookies, no user-specific
+// branching), and glossary entries change far less often than articles -
+// still needs fallback: 'blocking' rather than a fixed paths list with
+// fallback: false, since a newly-added term (admin panel/glossary
+// generation) would otherwise 404 until the next full rebuild.
+export async function getStaticPaths() {
+  let terms = [];
+  try {
+    terms = await apiGet("/api/glossary");
+  } catch (err) {
+    terms = [];
+  }
+  return {
+    paths: terms.map((t) => ({ params: { slug: t.slug } })),
+    fallback: "blocking",
+  };
+}
+
+export async function getStaticProps({ params }) {
   try {
     const term = await apiGet(`/api/glossary/${params.slug}`);
-    return { props: { term } };
+    // 300s: glossary entries change rarely (an occasional evergreen SEO
+    // refresh, see services/seo/evergreenRefresh.js) - no need for the
+    // 60s freshness pages/index.js and the article page use for
+    // frequently-changing vote counts.
+    return { props: { term }, revalidate: 300 };
   } catch (err) {
     return { notFound: true };
   }

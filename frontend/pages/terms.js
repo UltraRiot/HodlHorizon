@@ -7,13 +7,18 @@ const FALLBACK_TITLE = "Terms of Use | Hodl Horizon";
 const FALLBACK_DESCRIPTION =
   "Hodl Horizon's terms of use: our AI-written news and analysis is informational only, not financial advice, and market data may be delayed or inaccurate.";
 
-export async function getServerSideProps() {
+// ISR, not SSR - see about.js's getStaticProps comment for why this uses
+// revalidate: 86400 rather than a plain no-revalidate build (the evergreen
+// SEO refresh job can change this page's title/description on its own
+// 24h schedule, independent of any request).
+export async function getStaticProps() {
   const seo = await apiGet("/api/pages/terms/seo").catch(() => null);
   return {
     props: {
       seoTitle: seo?.seo_title || FALLBACK_TITLE,
       seoDescription: seo?.seo_description || FALLBACK_DESCRIPTION,
     },
+    revalidate: 86400,
   };
 }
 

@@ -1,6 +1,6 @@
 // Manage the RSS sources the news engine scans. This is the "Feeds" page.
 // Every source is assigned to exactly one category up front - the AI no
-// longer guesses category from keywords (see ai-content-quality-spec.md).
+// longer guesses category from keywords.
 import { Router } from "express";
 import { query } from "../../db.js";
 

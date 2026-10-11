@@ -154,10 +154,35 @@ export async function uniqueSlug(base) {
 
 // How many articles (any status) this category has already generated today -
 // used to enforce the per-category daily cap.
+//
+// Real regression found live (freshness-review-2026-09-20.md): bare
+// date_trunc('day', now()) truncates to midnight in the SESSION's
+// configured Postgres timezone (this instance: Europe/Berlin, UTC+2 in
+// September), not UTC - despite this function's own history assuming a
+// UTC reset. That ~2-hour skew against the rest of this codebase's UTC-
+// based day logic (isWeekendUTC, the now-removed hour-of-day pacing) is
+// exactly what caused each category's daily cap to burst right at the
+// mismatched reset instant instead of resetting at a real, predictable
+// UTC midnight.
+//
+// The fix needs BOTH "AT TIME ZONE 'UTC'"s, not just one - verified live
+// against this database before shipping, not assumed: a single
+// `date_trunc('day', now() AT TIME ZONE 'UTC')` produces a timestamp
+// WITHOUT time zone (correct text, "2026-09-21 00:00:00"), but comparing
+// that naive value against created_at (timestamptz) makes Postgres cast
+// it back to timestamptz using the SESSION timezone again - reproducing
+// the exact same bug, just shifted by the session's UTC offset instead of
+// fixed. Confirmed directly: with this session's Europe/Berlin timezone,
+// the single-conversion form counted 2026-09-20T23:00:00Z (still
+// yesterday in real UTC) as "today," the same 2-hour-early-reset failure
+// this fix exists to remove. The second "AT TIME ZONE 'UTC'" converts the
+// naive midnight-UTC value back into an actual timestamptz instant
+// (interpreting it AS UTC rather than as session-local), which compares
+// correctly against created_at regardless of session timezone.
 export async function articlesCreatedToday(categoryId) {
   const { rows } = await query(
     `SELECT COUNT(*)::int AS count FROM articles
-     WHERE category_id = $1 AND created_at >= date_trunc('day', now())`,
+     WHERE category_id = $1 AND created_at >= (date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')`,
     [categoryId]
   );
   return rows[0].count;

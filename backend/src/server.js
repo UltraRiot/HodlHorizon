@@ -2,6 +2,7 @@
 // this file's only job is wiring them together.
 import express from "express";
 import cors from "cors";
+import helmet from "helmet";
 import dotenv from "dotenv";
 
 import categoriesRoutes from "./routes/categories.js";
@@ -31,6 +32,12 @@ dotenv.config();
 const app = express();
 app.use(cors({ origin: process.env.FRONTEND_URL || "*" }));
 app.use(express.json());
+// Security headers (X-Content-Type-Options, X-Frame-Options/frame-ancestors,
+// HSTS, etc.) - pre-launch security review found none set at all. Defaults
+// only, no custom CSP directives - this is an API (JSON responses, no HTML
+// views to lock down), so helmet's default policy is enough without
+// hand-tuning a content policy for pages this server doesn't render.
+app.use(helmet());
 
 app.get("/health", (req, res) => res.json({ ok: true }));
 
