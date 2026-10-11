@@ -36,7 +36,7 @@ export default function AdminPolls() {
 
   async function toggleWidget() {
     const next = !widgetEnabled;
-    setWidgetEnabled(next); // optimistic, matches the ai-engine.js toggle pattern
+    setWidgetEnabled(next);
     await adminFetch("/api/admin/settings/poll-widget", {
       method: "PATCH",
       body: JSON.stringify({ poll_widget_enabled: next }),

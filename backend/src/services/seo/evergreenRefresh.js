@@ -1,14 +1,3 @@
-// Evergreen SEO refresh: glossary_terms + a handful of static pages
-// (About, Disclosure, Privacy, Terms, the Learn hub index) only. Deliberately
-// excludes published news/Analysis articles - those are timestamped and
-// shouldn't have their metadata silently changed after the fact.
-//
-// For each item: if its current seo_title/seo_description score below
-// SCORE_THRESHOLD, or it hasn't been reviewed in REVIEW_INTERVAL_DAYS,
-// regenerate ONLY those two fields via the AI provider, using the item's
-// existing body text as input. The body itself is never touched. Every
-// item's seo_last_reviewed_at is updated when checked, whether or not its
-// metadata actually changed.
 import { query } from "../../db.js";
 import { scoreSeoFields } from "./seoScore.js";
 import { generateSeoRefresh } from "../ai/provider.js";
@@ -37,10 +26,6 @@ async function refreshGlossary() {
 
     const draft = await generateSeoRefresh({ label: term.term, body: term.body });
 
-    // A mock-provider result is placeholder text - never let it overwrite
-    // real production SEO fields (same principle as the news pipeline's
-    // publish guard). Still mark it reviewed so it isn't re-checked every
-    // run while AI_PROVIDER is unset/mis-cased.
     if (draft.provider === "mock") {
       console.log(`Evergreen SEO: skipping apply for glossary term "${term.term}" - mock provider.`);
       await query("UPDATE glossary_terms SET seo_last_reviewed_at = now() WHERE id = $1", [term.id]);

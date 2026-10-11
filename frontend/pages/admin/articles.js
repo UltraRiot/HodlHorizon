@@ -10,12 +10,6 @@ const STATUS_STYLE = {
   scheduled: { background: "rgba(90,157,224,0.14)", color: "var(--tag-stocks)" },
 };
 
-// "Scheduled" is the delayed-auto-publish status (services/rss/
-// scanAndGenerate.js): a clean single-source article with a countdown
-// instead of indefinite manual review. Renders a human "in Xh"/"in Xm"
-// readout rather than the raw timestamp; anything already past due (the
-// cron tick just hasn't run yet) reads as "shortly" instead of a
-// confusing negative duration.
 function formatAutoPublishCountdown(autoPublishAt) {
   if (!autoPublishAt) return null;
   const diffMs = new Date(autoPublishAt).getTime() - Date.now();
@@ -45,7 +39,6 @@ export default function AdminArticles() {
 
   useEffect(load, [filter]);
 
-  // Escape closes the panel too, not just the X button / click-outside.
   useEffect(() => {
     if (!panelOpen) return;
     function onKeyDown(e) {
@@ -65,11 +58,6 @@ export default function AdminArticles() {
     load();
   }
 
-  // Cancels a scheduled article's timer and moves it back to plain review
-  // (same PATCH as any other status change - see routes/admin/articles.js
-  // for what it does server-side to a "scheduled" row specifically).
-  // Re-fetches the open panel's own copy too, not just the list, so its
-  // status/countdown update immediately without closing the panel.
   async function holdArticle(id) {
     await setStatus(id, "review");
     if (selectedArticleId === id) viewArticle(id);
@@ -115,12 +103,6 @@ export default function AdminArticles() {
         {loading ? (
           <p style={{ color: "var(--text-mute)" }}>Loading…</p>
         ) : (
-          // The table is wider than a phone screen (5 columns plus up to 4
-          // action buttons) - scroll it horizontally within its own box
-          // instead of letting it blow out the page's width. That matters
-          // beyond just this table: an overflowing page widens the whole
-          // layout viewport, which would also throw off the preview
-          // panel's fixed-position math below.
           <div style={{ overflowX: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
@@ -220,9 +202,6 @@ export default function AdminArticles() {
 function ArticlePreviewPanel({ open, loading, article, onClose, onHold }) {
   return (
     <>
-      {/* Click-outside-to-close overlay. Always mounted so the panel's
-          slide transition can animate both ways; inert (no pointer events,
-          invisible) while closed. */}
       <div
         onClick={onClose}
         style={{

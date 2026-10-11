@@ -7,10 +7,6 @@ const FALLBACK_TITLE = "Terms of Use | Hodl Horizon";
 const FALLBACK_DESCRIPTION =
   "Hodl Horizon's terms of use: our AI-written news and analysis is informational only, not financial advice, and market data may be delayed or inaccurate.";
 
-// ISR, not SSR - see about.js's getStaticProps comment for why this uses
-// revalidate: 86400 rather than a plain no-revalidate build (the evergreen
-// SEO refresh job can change this page's title/description on its own
-// 24h schedule, independent of any request).
 export async function getStaticProps() {
   const seo = await apiGet("/api/pages/terms/seo").catch(() => null);
   return {
@@ -22,13 +18,6 @@ export async function getStaticProps() {
   };
 }
 
-// The visible "draft template, not yet reviewed" notice was removed from
-// this page ahead of launch (pre-launch security/legal review) so it no
-// longer tells every visitor the Terms aren't ready - but the underlying
-// content below is still the original placeholder copy and has NOT had a
-// real legal review. Don't treat its removal as the content itself being
-// signed off; get an actual lawyer or policy generator to review the text
-// below before relying on it.
 export default function Terms({ seoTitle, seoDescription }) {
   return (
     <>

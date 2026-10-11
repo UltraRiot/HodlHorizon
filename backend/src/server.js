@@ -1,5 +1,3 @@
-// The Express app entry point. Every route file is small and focused -
-// this file's only job is wiring them together.
 import express from "express";
 import cors from "cors";
 import helmet from "helmet";
@@ -32,11 +30,6 @@ dotenv.config();
 const app = express();
 app.use(cors({ origin: process.env.FRONTEND_URL || "*" }));
 app.use(express.json());
-// Security headers (X-Content-Type-Options, X-Frame-Options/frame-ancestors,
-// HSTS, etc.) - pre-launch security review found none set at all. Defaults
-// only, no custom CSP directives - this is an API (JSON responses, no HTML
-// views to lock down), so helmet's default policy is enough without
-// hand-tuning a content policy for pages this server doesn't render.
 app.use(helmet());
 
 app.get("/health", (req, res) => res.json({ ok: true }));
@@ -61,16 +54,8 @@ app.use("/api/admin/usage", requireAdmin, adminUsageRoutes);
 app.use("/api/admin/glossary", requireAdmin, adminGlossaryRoutes);
 app.use("/api/admin/calendar", requireAdmin, adminCalendarRoutes);
 app.use("/api/admin/content-audit", requireAdmin, adminContentAuditRoutes);
-// Bare "/api/admin" prefix, not its own "/api/admin/polls" one - this
-// router needs two different real prefixes (/api/admin/polls/... and
-// /api/admin/settings/poll-widget), see routes/admin/polls.js's top
-// comment. Registered after adminAuthRoutes (also mounted at bare
-// "/api/admin", for /login) so /login keeps resolving there first -
-// adminPollsRoutes has no /login route, so requests fall through
-// correctly either way, but this keeps the ordering unsurprising.
 app.use("/api/admin", requireAdmin, adminPollsRoutes);
 
-// Basic error handler so a thrown error becomes JSON instead of crashing.
 app.use((err, req, res, next) => {
   console.error(err);
   res.status(500).json({ error: "Something went wrong." });
@@ -80,22 +65,10 @@ const port = process.env.PORT || 4000;
 app.listen(port, () => {
   console.log(`Hodl Horizon API listening on http://localhost:${port}`);
 
-  // Loud and impossible to miss on purpose - this flag makes SPY/QQQ/Gold/
-  // WTI data fake (canned, not fabricated-looking - see dryRunFixtures.js),
-  // and it must never be on in production without someone noticing. See
-  // backend/.env.example's MARKET_DATA_DRY_RUN comment.
   if (process.env.MARKET_DATA_DRY_RUN === "true") {
     console.log("MARKET_DATA_DRY_RUN=true - using canned responses, not calling real providers.");
   }
 
-  // TODO(Robert): set a real ADMIN_PASSWORD in .env before this ever runs
-  // against a production database - deliberately not auto-generated here
-  // (see the pre-launch security review), since it's a credential you need
-  // to remember and type yourself. One catch: seed.js only ever INSERTs the
-  // admin row if that email doesn't already exist - if you've already run
-  // seed once, changing this env var alone won't update an existing
-  // account's password. Update admin_users.password_hash directly (or drop
-  // the row and re-run `npm run seed`) to actually change a live password.
   if (process.env.ADMIN_PASSWORD === "change-this-password") {
     console.warn(
       "SECURITY: ADMIN_PASSWORD in .env is still the default placeholder - set a real password before deploying. " +

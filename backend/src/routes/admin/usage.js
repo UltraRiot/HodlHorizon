@@ -1,5 +1,3 @@
-// Shows how much the AI engine has cost this month, broken down by provider.
-// Every AI call (services/ai/provider.js) writes one row to ai_usage_log.
 import { Router } from "express";
 import { query } from "../../db.js";
 

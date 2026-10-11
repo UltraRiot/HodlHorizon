@@ -1,11 +1,3 @@
-// Regression test pinning REDUNDANCY_CHECK_FIELDS' contract - both
-// Structured Outputs (OpenAI) and forced tool-use (Anthropic) require
-// every property to be listed in `required`, so a field present in
-// `properties` but missing from `required` would silently make that
-// question optional for one provider's strict-mode enforcement. Added
-// alongside the #429 divergence-acknowledgment question (unacknowledged_divergence/
-// divergence_reason) specifically because that's the exact kind of gap
-// (a field defined but not required) that would be easy to miss by eye.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { REDUNDANCY_CHECK_FIELDS } from "./schemas.js";

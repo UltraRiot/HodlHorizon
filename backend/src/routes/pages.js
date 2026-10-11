@@ -1,7 +1,3 @@
-// Public read-only access to page_seo, so the handful of static frontend
-// pages (About, Disclosure, Privacy, Terms, the Learn hub index) can render
-// whatever seo_title/seo_description the evergreen refresh job most
-// recently set, instead of a value baked into the page at build time.
 import { Router } from "express";
 import { query } from "../db.js";
 

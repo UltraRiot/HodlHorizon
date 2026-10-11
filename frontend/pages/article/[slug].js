@@ -5,34 +5,16 @@ import Footer from "../../components/Footer";
 import ReactionButtons from "../../components/ReactionButtons";
 import { apiGet } from "../../lib/api";
 
-// ISR, not SSR: every reader hit used to do a full server round-trip for
-// content that's the same for every visitor (no cookies, no per-visitor
-// branching). Articles publish continuously though - the delayed
-// auto-publish path alone (backend/src/services/rss/scanAndGenerate.js)
-// adds new slugs every day - so this can't use fallback: false with a
-// fixed paths list the way a handful of legal pages can; anything
-// published after the last build still needs to resolve.
 export async function getStaticPaths() {
   let articles = [];
   try {
-    // Reuses the same endpoint the real /sitemap.xml already calls for
-    // exactly this "every published slug" list - no new backend endpoint
-    // needed for something that already exists.
     const data = await apiGet("/api/sitemap-data");
     articles = data.articles || [];
   } catch (err) {
-    articles = []; // build-time fetch failure - every path just falls through to the fallback below instead of failing the build
+    articles = [];
   }
   return {
     paths: articles.map((a) => ({ params: { slug: a.slug } })),
-    // 'blocking' (not 'true' + a loading state): a story published after
-    // the last build renders once on that first request (like the old
-    // getServerSideProps did for every request) and is then cached like
-    // every other page - there's nothing meaningfully faster to show in a
-    // loading skeleton than the article itself, which is what the visitor
-    // actually came for. Not 'false': that would 404 every article
-    // published since the last build, which given continuous publishing
-    // would be a real, frequent regression, not an edge case.
     fallback: "blocking",
   };
 }
@@ -45,14 +27,6 @@ export async function getStaticProps({ params }) {
     return { notFound: true };
   }
 
-  // Same category only - see GET /api/articles/:slug/related, which used
-  // to backfill with other-category articles when the category was
-  // sparse (the cause of a real bug: a Commodities article's "Related
-  // Articles" showing a Crypto one). That backfill is gone now, but this
-  // filter stays as a regression guard: if a future change to that
-  // endpoint (or a different one swapped in later) ever reintroduces a
-  // category mismatch, it's dropped here and logged instead of silently
-  // rendering under a "Related Articles" heading that promises otherwise.
   let related = [];
   try {
     const rawRelated = await apiGet(`/api/articles/${params.slug}/related?limit=4`);
@@ -69,13 +43,6 @@ export async function getStaticProps({ params }) {
 
   return {
     props: { article, related },
-    // 60s, matching pages/index.js's own ISR pattern - deliberate
-    // freshness-vs-load tradeoff, not an oversight: bullish/bearish/
-    // neutral vote counts live on this same articles row and change after
-    // publish (ReactionButtons posts to /api/articles/:id/react), so a
-    // longer revalidate would let those counts look visibly frozen. 60s
-    // keeps them close to live while still turning "every reader hit" into
-    // "at most one origin render per minute per article."
     revalidate: 60,
   };
 }
@@ -89,32 +56,13 @@ export default function ArticlePage({ article, related }) {
     "@type": "NewsArticle",
     headline: article.title,
     description: article.seo_description || article.dek,
-    // Google lists "image" as REQUIRED for NewsArticle rich-result
-    // eligibility (not just recommended) - found missing during this
-    // pre-launch audit. Articles themselves never carry an image (see
-    // STYLE_INSTRUCTIONS in backend/src/services/ai/prompts.js - "this
-    // site never uses images in articles," a deliberate editorial choice),
-    // so this falls back to the same site-wide og-default.jpg every OG/
-    // Twitter tag already falls back to (components/Seo.js) rather than
-    // leaving the field out - an array, per Google's spec, even with one entry.
     image: [`${siteUrl}/og-default.jpg`],
     datePublished: article.published_at,
-    // dateModified: recommended by Google, not just cosmetic - it's part
-    // of what schedules a re-crawl. Real value now (migrations/
-    // 015_article_updated_at.sql) - articles.updated_at is set equal to
-    // created_at on insert (both default to now() in the same statement)
-    // and bumped by PATCH /api/admin/articles/:id whenever an admin edits
-    // a PUBLISHED article's content (see that route). Backfilled to
-    // created_at for every pre-existing row, so this is never null even
-    // for articles that predate the column.
     dateModified: article.updated_at,
     author: { "@type": "Organization", name: "Hodl Horizon" },
     publisher: {
       "@type": "Organization",
       name: "Hodl Horizon",
-      // Google wants a real square-ish logo here (min 112x112, they
-      // recommend closer to 600x60 min width) - confirmed present in
-      // /public and resolving with a 200 (see this feature's QA pass).
       logo: { "@type": "ImageObject", url: `${siteUrl}/logo-schema.png` },
     },
     mainEntityOfPage: url,

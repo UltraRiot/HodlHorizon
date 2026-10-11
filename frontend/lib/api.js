@@ -1,6 +1,3 @@
-// Every fetch call to the backend goes through these two helpers, so
-// there's exactly one place that knows the API's base URL and how admin
-// auth headers work.
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
 
 export async function apiGet(path) {

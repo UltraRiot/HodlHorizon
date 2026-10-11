@@ -1,11 +1,3 @@
-// Regression tests for recordReviewQueueSize's growth detection - real
-// motivation: 31 Analysis articles were found sitting in "review" with no
-// automated way to notice the backlog was accumulating (found only
-// because a human asked). This is a real DB-backed test (like
-// scanAndGenerate.test.js's concurrent-insert test) rather than a mocked
-// one, since the logic under test IS "read back the previous run's row
-// and compare" - a disposable, uniquely-named category_scope keeps this
-// from touching or being confused with real check history.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { query } from "../../db.js";
@@ -47,7 +39,7 @@ test("recordReviewQueueSize does not flag a small increase that clears neither t
   const scope = testScope();
   try {
     await recordReviewQueueSize(scope, 20);
-    const result = await recordReviewQueueSize(scope, 22); // +2 absolute, 10% relative - routine noise
+    const result = await recordReviewQueueSize(scope, 22);
     assert.equal(result.grew, null, "a 2-article increase on a 20-article queue is routine, not an accumulating backlog");
   } finally {
     await cleanup(scope);
@@ -55,10 +47,6 @@ test("recordReviewQueueSize does not flag a small increase that clears neither t
 });
 
 test("recordReviewQueueSize does not flag a large relative jump that's still a trivially small absolute count", () => {
-  // Documents the design choice directly rather than re-testing the DB
-  // path: going from 1 to 2 is a 100% relative increase but only 1 real
-  // article - the absolute threshold exists specifically to prevent this
-  // from reading as "the backlog is accumulating."
   const QUEUE_GROWTH_MIN_ABSOLUTE = 5;
   assert.ok(2 - 1 < QUEUE_GROWTH_MIN_ABSOLUTE);
 });

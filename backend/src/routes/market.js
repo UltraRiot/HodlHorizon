@@ -11,9 +11,6 @@ import { getOverviewCache, maybeRefreshOverviewCache } from "../services/marketD
 
 const router = Router();
 
-// A small in-memory cache so we don't hammer CoinGecko's free tier on every
-// page load. Good enough for a project this size - swap for Redis later
-// if you outgrow it.
 const cache = new Map();
 const CACHE_MS = 60 * 1000;
 
@@ -25,11 +22,6 @@ async function cached(key, loader) {
   return value;
 }
 
-// Crypto is always live (CoinGecko). Equity (SPY/QQQ) and commodity
-// (Gold/WTI) figures come from market_data_cache - see prices.js's
-// getEquityTicker/getCommoditySnapshot - and are only included when their
-// cache row is fresh; a class with no fresh data is simply left out, never
-// padded with a fabricated placeholder.
 router.get("/ticker", async (req, res) => {
   try {
     const [crypto, equity, gold, wti] = await Promise.all([
@@ -53,11 +45,6 @@ router.get("/movers", async (req, res) => {
   }
 });
 
-// ?key=gold|wti|spy reads a technical snapshot from market_data_cache's
-// daily history (see prices.js's getCachedTechnicalSnapshot) - same shape
-// as the crypto snapshot below, computed from real Alpha Vantage history
-// fetched on a schedule rather than live. 404s (not a fabricated fallback)
-// if that asset's cached history is missing or stale.
 router.get("/snapshot", async (req, res) => {
   const key = req.query.key;
   if (key) {
@@ -78,20 +65,6 @@ router.get("/snapshot", async (req, res) => {
   }
 });
 
-// Backs the homepage's full-width "Markets Overview" strip (frontend/
-// components/MarketsOverview.js) - one 3-instrument column per asset
-// class. Crypto is real (CoinGecko, via getCryptoTicker(), same 60s lazy
-// cache as /ticker above - CoinGecko has no meaningful rate limit for
-// this). Indices/forex/commodities/stocks are real Alpha Vantage data too,
-// but this route NEVER fetches them live or blocks on Alpha Vantage - the
-// free tier is 25 requests/day. It always serves whatever's currently in
-// overviewCache.js's in-memory cache immediately, and separately (fire and
-// forget, not awaited) asks that cache to refresh itself in the background
-// if it's gone stale - see maybeRefreshOverviewCache(). This is the sole
-// trigger for a refresh now (see overviewCache.js's bug-history comment
-// for why a boot-time timer was dropped): correctness depends on this
-// route getting hit periodically, not on the server staying up any
-// particular length of time.
 router.get("/overview", async (req, res) => {
   try {
     const crypto = await cached("crypto-ticker", getCryptoTicker);

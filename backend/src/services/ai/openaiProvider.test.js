@@ -1,19 +1,3 @@
-// Regression tests for callOpenAi()'s two hardening fixes (see the OpenAI
-// Provider Review artifact, 2026-09-20, which root-caused both):
-// 1. A model refusal (message.refusal set, message.content null) used to
-//    come back as a silent, empty-looking "success" - JSON.parse(null)
-//    doesn't throw (it parses the string "null" to the JS value null), and
-//    {...null} is legal and produces {} - so a refusal failed confusingly
-//    downstream instead of clearly at the point it happened.
-// 2. A transient 429/5xx had no retry at all - a single rate-limit blip
-//    permanently lost that story until the next scan tick, which (given
-//    the pacing/quota bug in freshness-review-2026-09-20.md) can be ~23
-//    hours away once a category's daily quota fires in one narrow burst.
-//
-// Stubs global.fetch directly (the same pattern prices.test.js already
-// established for getJson, which also has no DI seam) - real network call
-// never leaves, and no real OPENAI_API_KEY is needed since the request is
-// never actually sent.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { openaiGenerateGlossary } from "./openaiProvider.js";
@@ -114,7 +98,6 @@ test("callOpenAi gives up after exhausting its retries on a persistent 500, thro
     },
     async () => {
       await assert.rejects(() => openaiGenerateGlossary("Some Term"), /OpenAI request failed \(500\)/);
-      // 1 initial attempt + 2 retries (RETRY_BACKOFF_MS has 2 entries) = 3 total.
       assert.equal(callCount, 3, "expected the initial attempt plus both backoff retries, then give up");
     }
   );

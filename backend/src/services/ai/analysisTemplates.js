@@ -1,14 +1,3 @@
-// Fixed-variety, code-chosen opening sentences and closing-paragraph
-// framings for Analysis pieces - replaces the "vary which indicator you
-// lead with" PROMPT instruction (prompts.js's old structureVarietyBlock),
-// which two separate rounds of real generation proved doesn't hold: the
-// SAME opening-clause check kept failing on successive real drafts even
-// after the specific failure was fed back as an explicit correction note
-// (see runAnalysis.js's real console log, 2026-09-19 - 20+ consecutive
-// real BTC/ETH drafts failed hasFormulaicOpening both on the first
-// attempt and after a targeted retry). Asking the model to make a good
-// choice, even forcefully, isn't reliable here - so code makes the choice
-// instead and hands it over as a requirement, not a suggestion.
 import { formatMarketValue } from "../marketData/formatMarketValue.js";
 export { selectTemplate } from "./templateSelection.js";
 
@@ -16,12 +5,6 @@ function fmt(value, assetClass) {
   return formatMarketValue(value, assetClass);
 }
 
-// Every template's applicable() must be true for it to even be offered as
-// a choice - a few templates only make sense in specific number
-// configurations (a genuine breakout, or price genuinely sitting between
-// both levels), and offering one that doesn't fit the real numbers would
-// just create a new factual problem for findAnalysisDistanceMismatch to
-// catch, not a stylistic one.
 export const OPENING_TEMPLATES = [
   {
     id: 0,
@@ -52,10 +35,6 @@ export const OPENING_TEMPLATES = [
   {
     id: 3,
     label: "breakout-framing",
-    // Only accurate to offer when price has genuinely broken outside the
-    // support/resistance band - claiming a breakout that didn't happen
-    // would be exactly the kind of factual problem findAnalysisDistanceMismatch
-    // already exists to catch, not a stylistic choice to make freely.
     applicable: (s) => s.price > Number(s.resistance) || s.price < Number(s.support),
     build: (s) => {
       const brokeResistance = s.price > Number(s.resistance);
@@ -74,8 +53,6 @@ export const OPENING_TEMPLATES = [
   {
     id: 5,
     label: "dual-distance-comparative",
-    // Only reads naturally when price genuinely sits between both levels -
-    // the same reasoning as the breakout template above, mirrored.
     applicable: (s) => s.price <= Number(s.resistance) && s.price >= Number(s.support),
     build: (s) => {
       const supportPct = ((s.price - Number(s.support)) / s.price) * 100;
@@ -100,11 +77,6 @@ export const OPENING_TEMPLATES = [
   },
 ];
 
-// Shared prefix every closing directive carries - explicitly names the
-// exact structural pattern real corpus mining found (see runAnalysis.js's
-// findRepeatedClosingClause comment) so the model can't satisfy the
-// specific directive below while still reaching for the banned shape out
-// of habit.
 const CLOSING_ANTI_PATTERN_PREFIX = `Do not begin your final substantive paragraph (the one before the not-financial-advice disclaimer) with a summary transition word - "Overall," "In summary," "In synthesis," "Taken together," "Taking into account," "Together," "Considering," "To summarize," or "Altogether" are all banned there. Do not make your closing point a bare restatement of the price, RSI, support, or resistance numbers already given earlier in the piece - say something none of the earlier paragraphs already said.`;
 
 export const CLOSING_DIRECTIVES = [

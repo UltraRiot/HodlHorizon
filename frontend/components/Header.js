@@ -2,9 +2,6 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { applyTheme, setStoredTheme } from "../lib/theme";
 
-// Analysis link intentionally omitted (News-is-the-only-active-category
-// priority shift) - kept out of this hardcoded list rather than deleted
-// from anywhere else, so re-adding it later is a one-line change here.
 const NAV_ITEMS = [
   { href: "/", label: "Home" },
   { href: "/category/stocks", label: "Stocks" },
@@ -15,10 +12,6 @@ const NAV_ITEMS = [
 
 export default function Header() {
   const [menuOpen, setMenuOpen] = useState(false);
-  // null until mounted (not "dark"/"light") so this never renders a guess
-  // that could mismatch what pages/_document.js's inline script already
-  // set on <html> before hydration - it just reads that back into React
-  // state on mount instead of deciding a theme itself.
   const [theme, setTheme] = useState(null);
 
   useEffect(() => {
@@ -52,14 +45,6 @@ export default function Header() {
     >
       <div style={{ display: "flex", alignItems: "center", gap: 36, flexWrap: "wrap" }}>
         <Link href="/" style={{ display: "flex", alignItems: "center", gap: 9 }}>
-          {/* Was an inline placeholder diamond/shield outline - swapped for
-              the real logo mark (same file the favicon/apple-touch-icon
-              use, see pages/_document.js) so the header and the browser
-              tab show the same branding. This SVG has its own fill colors
-              baked in (dark rounded-square background, gold bars), not
-              currentColor/var(--gold) like the placeholder was, so it
-              intentionally looks the same in both themes rather than
-              re-tinting - that's the approved brand mark, not a bug. */}
           <img src="/favicon.svg" width={38} height={38} alt="" style={{ borderRadius: 8 }} />
           <span className="serif" style={{ fontWeight: 600, fontSize: 22, color: "var(--text)" }}>
             Hodl<span style={{ color: "var(--gold)" }}>Horizon</span>
@@ -80,13 +65,6 @@ export default function Header() {
       </div>
 
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-        {/* Hero placement per spec: top-right, next to the nav, visible on
-            every viewport without scrolling - unlike .nav-toggle (the
-            hamburger) this is never hidden at any breakpoint. theme starts
-            null (see the comment above) so nothing renders here until the
-            _document.js flash-prevention script's already-applied choice
-            has been read back - a placeholder keeps the header's layout
-            width stable instead of the button popping in a frame later. */}
         {theme ? (
           <button
             onClick={toggleTheme}
@@ -124,9 +102,6 @@ export default function Header() {
   );
 }
 
-// Minimal line icons matching the wordmark's style above - currentColor so
-// the button's own `color` (var(--text-dim)) drives them, no separate
-// color variable needed.
 function SunIcon() {
   return (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none">

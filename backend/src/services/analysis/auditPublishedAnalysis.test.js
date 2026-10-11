@@ -1,11 +1,3 @@
-// Regression tests for the audit's own text-extraction step
-// (reconstructSnapshotFromArticleText) - this is what lets the audit
-// re-check already-published articles at all, since this project has
-// never persisted the exact price/support/resistance snapshot that was
-// true when a given article was generated (see auditPublishedAnalysis.js's
-// top comment). Every body used here is real, copied verbatim from this
-// project's actual published Analysis backlog (not synthesized), the same
-// text the regex patterns were originally calibrated against.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { reconstructSnapshotFromArticleText } from "./auditPublishedAnalysis.js";

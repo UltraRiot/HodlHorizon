@@ -7,10 +7,6 @@ const FALLBACK_TITLE = "Disclosure | Hodl Horizon";
 const FALLBACK_DESCRIPTION =
   "How Hodl Horizon works: AI-generated news and analysis, reviewed before publishing, plus our not-financial-advice disclosure explained here.";
 
-// ISR, not SSR - see about.js's getStaticProps comment for why this uses
-// revalidate: 86400 rather than a plain no-revalidate build (the evergreen
-// SEO refresh job can change this page's title/description on its own
-// 24h schedule, independent of any request).
 export async function getStaticProps() {
   const seo = await apiGet("/api/pages/disclosure/seo").catch(() => null);
   return {

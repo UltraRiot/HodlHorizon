@@ -12,10 +12,6 @@ import UpcomingCalendarWidget from "../../components/UpcomingCalendarWidget";
 import { apiGet } from "../../lib/api";
 import { CATEGORIES } from "../../lib/categories";
 
-// Safe wrapper: if one backend call fails (e.g. a market data provider is
-// down), the rest of the page still renders instead of a 500 page. Same
-// helper as pages/index.js's - duplicated rather than imported across a
-// page boundary for three lines.
 async function safe(promise, fallback) {
   try {
     return await promise;
@@ -25,12 +21,6 @@ async function safe(promise, fallback) {
   }
 }
 
-// One page per real category, known upfront from the shared CATEGORIES
-// list - "all" excluded, it lives at "/" (pages/index.js), not here.
-// fallback: false (not "blocking") because that list is the complete,
-// closed set of valid slugs: anything else is a genuine 404, not a
-// not-yet-generated page, so there's nothing useful a blocking fallback
-// would ever generate on demand.
 export async function getStaticPaths() {
   return {
     paths: CATEGORIES.filter((c) => c.slug !== "all").map((c) => ({ params: { slug: c.slug } })),
@@ -38,18 +28,7 @@ export async function getStaticPaths() {
   };
 }
 
-// ISR, not SSR - see pages/index.js's getStaticProps comment for why
-// (nothing here is per-visitor either, so the same 60s-revalidated build
-// serves every visitor of a given category).
 export async function getStaticProps({ params }) {
-  // "all" isn't a real category route - it lives at "/" - so it's
-  // explicitly excluded here even though it's in the shared CATEGORIES
-  // list. Anything else not in the list 404s instead of silently
-  // rendering an empty page for a typo'd slug. (getStaticPaths above
-  // already guarantees this for every real deploy, since fallback:false
-  // means Next never even calls this function for an unlisted slug - this
-  // check stays as a second guard rather than an assumption, since
-  // params.slug still technically could reach here some other way.)
   const category = CATEGORIES.find((c) => c.slug === params.slug && c.slug !== "all");
   if (!category) {
     return { notFound: true };

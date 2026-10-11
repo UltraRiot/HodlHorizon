@@ -1,34 +1,9 @@
-// Wires the Economic Calendar to a real feed instead of admin-entered
-// rows only. ForexFactory's own calendar widget runs on this exact URL -
-// there's no official public API for it, so this is treated as
-// inherently unstable: every fetch is try/catch'd, the response shape is
-// validated before use, and any failure just leaves calendar_events
-// exactly as it was (routes/calendar.js keeps serving whatever's already
-// in the DB). Failures are logged clearly so a permanent disappearance of
-// the feed gets noticed, not silently absorbed forever.
-//
-// Only the "thisweek" variant is fetched - "nextweek"/"lastweek"/
-// "thismonth" were confirmed to 404 against this feed. Fetching
-// "thisweek" once a day is enough: each new day's fetch naturally
-// includes that day's newly-visible events as the week rolls forward.
 import { query } from "../../db.js";
 
 const FEED_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.json";
 const SYNC_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const LAST_RUN_SETTING_KEY = "calendar_sync_last_run";
 
-// country -> region mapping, done here (the sync job), not the frontend,
-// per the task - and always computed fresh from the feed's raw currency
-// code on every sync, never reverse-engineered from whatever's already
-// sitting in the DB's region column (that information is genuinely lossy
-// once collapsed to a continent bucket - "Asia" alone can't tell you
-// whether a row was originally JPY or CNY). Labelled by financial center
-// rather than continent - the originating city, matching how
-// ForexFactory itself identifies these. Anything not listed here - CHF,
-// "All" (used for multi-country entries like summits), or a code this
-// feed has never shown before - falls to "Other" rather than being
-// dropped, with a warning logged so an unrecognized code is visible,
-// not silent.
 const COUNTRY_TO_REGION = {
   USD: "New York",
   GBP: "London",
@@ -79,10 +54,6 @@ async function fetchFeed() {
   }
 }
 
-// One sync cycle: fetch, validate/map each entry, upsert into
-// calendar_events with source='forexfactory'. A single malformed entry is
-// skipped (logged, counted), never aborts the rest of the batch - same
-// per-item isolation principle as the Markets Overview fix.
 export async function syncForexFactoryCalendar() {
   const result = { processed: 0, skipped: 0, netNewRows: 0, regions: [], impacts: [], failed: false };
   const events = await fetchFeed();
@@ -115,18 +86,6 @@ export async function syncForexFactoryCalendar() {
       impactsSeen.add(impact);
 
       try {
-        // The ON CONFLICT below only catches an exact-to-the-minute
-        // event_time repeat. In practice ForexFactory itself nudges an
-        // event's reported time by a few minutes between fetches (a bond
-        // auction's "provisional" time getting refined to its exact
-        // completion time, for example) - found live as duplicate rows
-        // for the same title+region a handful of minutes apart (e.g. two
-        // "BOJ Policy Rate" rows 24 minutes apart on the same sync day).
-        // Reconciling against any existing same title+region row within a
-        // few hours - reusing its id via an UPDATE rather than inserting
-        // a fresh row - closes that gap while still leaving two
-        // genuinely different occurrences of a recurring title (weeks
-        // apart) untouched.
         const { rows: nearbyRows } = await query(
           `SELECT id FROM calendar_events
            WHERE source = 'forexfactory' AND title = $1 AND region = $2
@@ -163,9 +122,6 @@ export async function syncForexFactoryCalendar() {
     result.impacts = [...impactsSeen];
   }
 
-  // Recorded whether this attempt succeeded or failed - a persistently
-  // broken feed should only be retried once per interval, not on every
-  // single request that happens to find the cache stale.
   await query(
     "INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2",
     [LAST_RUN_SETTING_KEY, new Date().toISOString()]
@@ -186,16 +142,8 @@ async function isStale() {
   return Date.now() - lastRun >= SYNC_INTERVAL_MS;
 }
 
-// True once a sync is actually in flight, so a burst of concurrent GET
-// /api/calendar requests while stale triggers exactly one background
-// sync, not one per request.
 let syncPromise = null;
 
-// Called from GET /api/calendar on every request (routes/calendar.js).
-// Never awaited by the caller - always returns immediately. Checks
-// staleness itself (not a boot-time timer - see the Markets Overview fix
-// this mirrors) so correctness doesn't depend on the process staying up
-// any particular length of time.
 export function maybeSyncCalendarIfStale() {
   if (syncPromise) return;
   syncPromise = isStale()

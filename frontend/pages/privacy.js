@@ -7,10 +7,6 @@ const FALLBACK_TITLE = "Privacy Policy | Hodl Horizon";
 const FALLBACK_DESCRIPTION =
   "Hodl Horizon's privacy policy: what data we collect (none required to read the site), how our cookieless analytics works, and your rights as a visitor here.";
 
-// ISR, not SSR - see about.js's getStaticProps comment for why this uses
-// revalidate: 86400 rather than a plain no-revalidate build (the evergreen
-// SEO refresh job can change this page's title/description on its own
-// 24h schedule, independent of any request).
 export async function getStaticProps() {
   const seo = await apiGet("/api/pages/privacy/seo").catch(() => null);
   return {
@@ -22,13 +18,6 @@ export async function getStaticProps() {
   };
 }
 
-// The visible "draft template, not yet reviewed" notice was removed from
-// this page ahead of launch (pre-launch security/legal review) so it no
-// longer tells every visitor the Privacy Policy isn't ready - but the
-// underlying content below is still the original placeholder copy and has
-// NOT had a real legal review. Don't treat its removal as the content
-// itself being signed off; get an actual lawyer or policy generator to
-// review the text below before relying on it.
 export default function Privacy({ seoTitle, seoDescription }) {
   return (
     <>

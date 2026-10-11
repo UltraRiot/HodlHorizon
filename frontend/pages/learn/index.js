@@ -7,11 +7,6 @@ import { apiGet } from "../../lib/api";
 const FALLBACK_TITLE = "Learn — Finance & Crypto Terms Explained | Hodl Horizon";
 const FALLBACK_DESCRIPTION = "Clear, concise explanations of finance and crypto terms every trader should know.";
 
-// ISR, not SSR: a single listing page (no dynamic route, so no
-// getStaticPaths needed here - that's only for [slug].js) with no
-// per-visitor data. 300s revalidate, same as the individual glossary
-// entry pages - new terms are added rarely enough that this isn't a
-// meaningful freshness tradeoff.
 export async function getStaticProps() {
   const [terms, seo] = await Promise.all([
     apiGet("/api/glossary").catch(() => []),

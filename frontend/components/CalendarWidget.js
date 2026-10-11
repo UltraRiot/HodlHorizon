@@ -1,13 +1,5 @@
 import { forecastPreviousText } from "../lib/calendarFormat";
 
-// Colors come from globals.css's --impact-* tokens (kept separate from
-// --red/--gold/--text-mute so this mapping can't silently drift if those
-// brand/status tokens are ever retuned - see the comment there). Any
-// impact value that isn't exactly "high"/"medium"/"low" (shouldn't happen -
-// the backend already normalizes this, see services/calendar/
-// syncForexFactory.js's mapImpact() - but never trust that blindly from a
-// frontend component) falls back to the low tier rather than rendering an
-// unstyled, invisible dot/badge.
 const IMPACT_COLOR = {
   high: "var(--impact-high)",
   medium: "var(--impact-medium)",
@@ -30,12 +22,6 @@ const LEGEND = [
   { impact: "low", label: "Low" },
 ];
 
-// Today's calendar (GET /api/calendar/today) - every impact level, since
-// a single day can genuinely mix all three. Unlike widgets that vanish
-// when empty (PollWidget, MoversWidget), this one always renders its
-// card - a quiet day with nothing scheduled is real information for a
-// visitor, not something to hide (see UpcomingCalendarWidget.js for the
-// "Upcoming This Week" companion, high-impact only).
 export default function CalendarWidget({ events }) {
   const list = events || [];
 
@@ -45,10 +31,6 @@ export default function CalendarWidget({ events }) {
         Today's Calendar
       </h3>
 
-      {/* A colored dot with no key is decoration, not information, to a
-          first-time visitor - one compact row, not its own section, so
-          it doesn't push the card noticeably taller next to the other
-          sidebar widgets. */}
       <div style={{ display: "flex", gap: 12, marginBottom: 14, flexWrap: "wrap" }}>
         {LEGEND.map((item) => (
           <div key={item.impact} style={{ display: "flex", alignItems: "center", gap: 5 }}>
@@ -70,14 +52,6 @@ export default function CalendarWidget({ events }) {
                 <div style={{ minWidth: 0 }}>
                   <div style={{ fontSize: 13.5, lineHeight: 1.4 }}>{event.title}</div>
 
-                  {/* Date + region + impact badge all on one line, e.g.
-                      "Sep 16 · US · HIGH" - region is skipped for manual
-                      admin-entered events (region is always null for
-                      those, see migrations/012_calendar_forexfactory.sql)
-                      rather than showing an empty tag. Region and impact
-                      are the same visual weight (10px/700/0.6 letter-
-                      spacing) so region reads as a peer to impact, not a
-                      louder or quieter signal. */}
                   <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--text-mute)", flexWrap: "wrap" }}>
                     <span>{new Date(event.event_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}</span>
                     {event.region && (
@@ -94,8 +68,6 @@ export default function CalendarWidget({ events }) {
                     </span>
                   </div>
 
-                  {/* Only rendered when the feed actually gave us a
-                      forecast or a previous value. */}
                   {forecastPrevious && (
                     <div style={{ fontSize: 11, color: "var(--text-mute)", marginTop: 2 }}>{forecastPrevious}</div>
                   )}

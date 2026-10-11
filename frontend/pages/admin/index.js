@@ -52,8 +52,6 @@ export default function AdminDashboard() {
               <h3 className="serif" style={{ margin: 0, fontSize: 15, fontWeight: 600 }}>Latest Articles</h3>
               <Link href="/admin/articles" style={{ fontSize: 13 }}>View all</Link>
             </div>
-            {/* Scroll horizontally within this box rather than letting the
-                table push the whole page wider than the screen. */}
             <div style={{ overflowX: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse" }}>
               <thead>

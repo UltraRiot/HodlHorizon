@@ -9,9 +9,6 @@ router.get("/status", async (req, res) => {
   res.json(await computeSeoStatus());
 });
 
-// GET /api/admin/seo/evergreen - glossary entries + static pages, each with
-// its current per-item score and when it was last reviewed, so it's visible
-// in the admin panel which items the evergreen job has (or hasn't) touched.
 router.get("/evergreen", async (req, res) => {
   const { rows: terms } = await query(
     "SELECT id, term AS label, seo_title, seo_description, seo_last_reviewed_at FROM glossary_terms ORDER BY term"
@@ -28,9 +25,6 @@ router.get("/evergreen", async (req, res) => {
   res.json(items);
 });
 
-// POST /api/admin/seo/refresh-evergreen-now - run the refresh job
-// immediately instead of waiting for the next scheduled check. Useful for
-// testing.
 router.post("/refresh-evergreen-now", async (req, res) => {
   try {
     const result = await runEvergreenSeoRefresh();

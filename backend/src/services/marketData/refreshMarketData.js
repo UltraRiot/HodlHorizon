@@ -1,33 +1,3 @@
-// Scheduled fetches into market_data_cache (see migrations/014_market_data_cache.sql).
-// Wired into jobs/scheduler.js on three cadences, each far under its
-// provider's daily budget:
-//   - Twelve Data quotes (SPY, QQQ, DIA):  hourly.  72/800 credits per day
-//     (3 symbols x 24 refreshes - each symbol costs its own credit even
-//     though all three fetches happen back to back).
-//   - Twelve Data Gold quote (XAU/USD):    every 8h.  3/800 credits per day.
-//   - Twelve Data Gold/SPY history:        daily.     2/800 credits per day.
-//   Twelve Data total here: 77/800 credits per day, before the Markets
-//   Overview strip's own Twelve Data usage (overviewCache.js) - see that
-//   file's budget comment for its share, comfortably under the 800/day
-//   free tier combined.
-//   - Alpha Vantage WTI quote:              every 8h.  3/25 requests per day.
-//   - Alpha Vantage WTI history:            daily.     1/25 requests per day.
-//   Alpha Vantage total here: 4/25 requests per day. WTI is the one asset
-//   left on Alpha Vantage - Gold moved to Twelve Data's real spot XAU/USD
-//   (a forex-categorized symbol, free on their Basic plan) once confirmed
-//   against Twelve Data's real docs that it isn't gated behind their paid
-//   commodities tier the way WTI/Brent/Natural Gas are - see
-//   alphaVantage.js's comment for the verification.
-//
-// routes/market.js and the Analysis job never call a provider directly -
-// this is the only place that does, and it only ever runs on a schedule,
-// never per-request.
-//
-// MARKET_DATA_DRY_RUN=true (see backend/.env.example) makes twelveData.js
-// and alphaVantage.js return canned responses instead of calling either
-// provider for real - this file doesn't need to know or care, since the
-// dry-run switch lives inside those clients themselves. The startup log
-// announcing dry-run mode is in server.js, not here.
 import { query } from "../../db.js";
 import { getTwelveDataQuote, getTwelveDataCloses } from "./twelveData.js";
 import { getWtiQuote, getWtiCloses } from "./alphaVantage.js";
@@ -47,13 +17,6 @@ async function upsertCacheRow(assetKey, result) {
   );
 }
 
-// Runs one fetch, logs the outcome, and writes the cache row - success or
-// failure. No retry here: one attempt, move on, the next scheduled run
-// tries again. Alpha Vantage's 1 request/second limit is handled inside
-// alphaVantage.js itself (a shared throttle across all its exported
-// functions, so refreshCommodityQuotes() and refreshCommodityHistory()
-// below can't burst each other even if they ever run concurrently) - this
-// file doesn't need its own spacing between calls.
 async function fetchAndCache(assetKey, label, fetchFn) {
   try {
     const payload = await fetchFn();
@@ -66,34 +29,16 @@ async function fetchAndCache(assetKey, label, fetchFn) {
 }
 
 export async function refreshEquityQuotes() {
-  // Dry-run mode is a deliberate exception to the "no key -> skip
-  // entirely" rule below - the whole point is exercising this pipeline
-  // without needing a real key at all. See twelveData.js's fetchQuoteBody().
   if (!isMarketDataDryRun() && !process.env.TWELVEDATA_API_KEY) {
     console.log("Market data: TWELVEDATA_API_KEY is not set, skipping equity quote refresh (SPY, QQQ, DIA).");
     return;
   }
-  // DIA added alongside the Markets Overview strip's indices unification
-  // (see getIndicesTicker() in prices.js) - it used to come from a second,
-  // independent Alpha Vantage GLOBAL_QUOTE call made only by the Overview
-  // strip, which could (and did) disagree with the header ticker's
-  // Twelve Data SPY/QQQ figures for the same real ETFs. Fetching it here
-  // too means every index the site shows has exactly one real quote
-  // behind it - still just 3 Twelve Data credits/day added (72/day at
-  // this hourly cadence), nowhere close to the 800/day free-tier ceiling.
   console.log("Market data: refreshing equity quotes (SPY, QQQ, DIA) from Twelve Data...");
   await fetchAndCache("spy", "SPY quote (Twelve Data)", () => getTwelveDataQuote("SPY"));
   await fetchAndCache("qqq", "QQQ quote (Twelve Data)", () => getTwelveDataQuote("QQQ"));
   await fetchAndCache("dia", "DIA quote (Twelve Data)", () => getTwelveDataQuote("DIA"));
 }
 
-// Gold and WTI now depend on two different keys (Twelve Data and Alpha
-// Vantage respectively - see the top-of-file comment for why), so each is
-// gated on its own key independently here rather than one shared
-// "skip entirely" check the way this used to work when both came from the
-// same Alpha Vantage account. A site that only configures
-// TWELVEDATA_API_KEY still gets real Gold data even with WTI omitted, and
-// vice versa - neither is padded with a fabricated placeholder either way.
 export async function refreshCommodityQuotes() {
   if (isMarketDataDryRun() || process.env.TWELVEDATA_API_KEY) {
     await fetchAndCache("gold", "Gold quote (Twelve Data, XAU/USD)", () => getTwelveDataQuote("XAU/USD"));

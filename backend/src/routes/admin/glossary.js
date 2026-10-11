@@ -19,9 +19,6 @@ router.post("/", async (req, res) => {
   res.status(201).json(rows[0]);
 });
 
-// POST /api/admin/glossary/generate   { term }
-// Uses the same AI provider as the news pipeline to draft a first version -
-// an admin still reviews and saves it via the regular POST above.
 router.post("/generate", async (req, res) => {
   const { term } = req.body;
   if (!term) return res.status(400).json({ error: "term is required." });

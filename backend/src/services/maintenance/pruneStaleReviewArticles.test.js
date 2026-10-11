@@ -1,10 +1,3 @@
-// Regression tests for the News review-queue auto-expiry - built after
-// confirming (by reading scanAndGenerate.js and jobs/scheduler.js) that no
-// such expiry existed anywhere: a held-for-review article accumulated
-// indefinitely, which is exactly how the real 119-article News backlog
-// went unnoticed for nearly a week (Sept 11-17) before a human happened to
-// audit it. Threshold reuses FRESHNESS_WINDOW_HOURS (72h), not a new
-// number - see this file's own header comment for why.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { query } from "../../db.js";
@@ -38,10 +31,6 @@ test("NEWS_CATEGORY_SLUGS excludes analysis - the auto-expiry is scoped to News 
   assert.deepEqual([...NEWS_CATEGORY_SLUGS].sort(), ["commodities", "crypto", "indices", "stocks"]);
 });
 
-// Real DB-backed test, same pattern as scanAndGenerate.test.js's
-// concurrent-insert test and contentQualityAudit.test.js's queue-growth
-// tests: this needs the real database, since pruneStaleReviewArticles()
-// reads back created_at and issues a real DELETE.
 test("pruneStaleReviewArticles deletes a real News review article past the threshold and leaves a fresh one alone", async () => {
   const { rows: catRows } = await query("SELECT id FROM categories WHERE slug = 'crypto'");
   const categoryId = catRows[0].id;
@@ -67,7 +56,6 @@ test("pruneStaleReviewArticles deletes a real News review article past the thres
 
   try {
     await query("UPDATE articles SET created_at = now() - interval '100 hours' WHERE id = $1", [staleId]);
-    // freshId keeps its real (just-now) created_at.
 
     const result = await pruneStaleReviewArticles();
     assert.ok(result.expired >= 1, "expected at least the stale test article to be counted as expired");
@@ -79,9 +67,5 @@ test("pruneStaleReviewArticles deletes a real News review article past the thres
     assert.equal(freshCheck.length, 1, "the fresh review article should NOT have been deleted");
   } finally {
     await query("DELETE FROM articles WHERE id = $1", [freshId]);
-    // content_audit_runs rows this call wrote are left in place deliberately -
-    // they're real, accurate audit history (an actual prune run happened),
-    // the same reasoning contentQualityAudit.js's own live-verification run
-    // earlier in this project was never cleaned up either.
   }
 });

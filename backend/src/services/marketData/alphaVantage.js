@@ -1,32 +1,3 @@
-// Alpha Vantage client for the scheduled market-data-cache job
-// (refreshMarketData.js) - WTI crude only. Gold and SPY history migrated
-// to Twelve Data (see twelveData.js) once real spot gold (XAU/USD) and
-// stock/forex time_series were confirmed to work on Twelve Data's free
-// Basic plan - only WTI stayed here, since Twelve Data's true
-// "commodities" catalog (WTI/Brent/Natural Gas, as opposed to XAU/USD's
-// forex categorization) is a paid Grow-plan feature per their pricing
-// page (https://twelvedata.com/pricing, checked 2026-09-18), not
-// confirmed available on Basic/free.
-//
-// This is intentionally a separate, independent client from the
-// GLOBAL_QUOTE/commodity-series helpers still in prices.js (Brent/Natural
-// Gas, also staying on Alpha Vantage for the same reason - see
-// overviewCache.js) that back the Markets Overview strip - that existing
-// code shares a single cross-call throttle tuned to its own request burst
-// pattern, and this job has a completely different, cron-driven call
-// pattern. Reusing that throttle would just make the two schedules
-// interfere with each other for no benefit; a few dozen lines of overlap
-// is worth the independence.
-//
-// Reuses STOCKS_DATA_API_KEY, the same Alpha Vantage account/key that
-// still powers the Overview strip's Brent/Natural Gas columns - one
-// Alpha Vantage account here, not two.
-//
-// One attempt per call, no retry loop - see twelveData.js's comment for why.
-//
-// MARKET_DATA_DRY_RUN=true swaps every real fetch below for a canned
-// response (see fetchAlphaVantageBody()/dryRunFixtures.js) so local
-// development never spends this key's real daily quota.
 import {
   isMarketDataDryRun,
   DRY_RUN_WTI_SERIES_BODY,
@@ -47,17 +18,6 @@ async function getJson(url) {
   return res.json();
 }
 
-// Alpha Vantage's free tier is 1 request/second. refreshCommodityQuotes()
-// and refreshCommodityHistory() (refreshMarketData.js) are two independent
-// functions that can run concurrently (e.g. both fired at server boot, or
-// their cron schedules ever landing on the same tick) - a throttle scoped
-// to a single function call wouldn't serialize calls made from the OTHER
-// one running at the same time. This module-level queue serializes every
-// call made through this file, regardless of which exported function
-// triggered it - same proven approach (and the same live-tested 1500ms
-// margin - see runAnalysis.js's old ALPHA_VANTAGE_MIN_GAP_MS) as the
-// Overview strip's throttledAlphaVantageCall() in prices.js, kept
-// independent from that one since the two have unrelated call patterns.
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -71,41 +31,22 @@ async function throttledGetJson(url) {
   return getJson(url);
 }
 
-// The only place that decides real vs. canned - MARKET_DATA_DRY_RUN=true
-// short-circuits before any key check, throttle wait, or network call, so
-// dry-run testing works even with no STOCKS_DATA_API_KEY configured at
-// all, and runs instantly (no 1500ms-per-call throttle). Everything
-// downstream (checkAlphaVantageError, shape parsing) runs identically
-// either way, so dry-run mode exercises the exact same validation code
-// the real path does.
 async function fetchAlphaVantageBody(buildUrl, cannedBody) {
   if (isMarketDataDryRun()) return cannedBody;
   const key = requireApiKey();
   return throttledGetJson(buildUrl(key));
 }
 
-// Alpha Vantage returns HTTP 200 even when rate-limited or given a bad
-// request - it signals failure via a "Note" (rate/burst limit),
-// "Information" (bad call), or "Error Message" field in the JSON body
-// instead of an HTTP error status, so every call site here checks this
-// explicitly rather than trusting res.ok alone.
 function checkAlphaVantageError(data, context) {
   const message = data["Note"] || data["Information"] || data["Error Message"];
   if (message) throw new Error(`Alpha Vantage ${context}: ${message}`);
 }
 
-// WTI has no separate real-time quote endpoint - it's a daily time series,
-// so a "quote" here just re-reads the same series and derives price/change
-// from the latest two points, same as history does. Re-polling this every
-// 8 hours (see refreshMarketData.js) just catches a same-day update or a
-// new day's bar sooner than the once-a-day history refresh would.
 function parseWtiSeries(data) {
   checkAlphaVantageError(data, "WTI");
   if (!Array.isArray(data.data)) {
     throw new Error("Alpha Vantage WTI: unexpected response shape.");
   }
-  // Alpha Vantage marks a non-trading day's value as "." rather than
-  // omitting the entry - filter those out before sorting.
   return data.data
     .filter((entry) => entry.value && entry.value !== ".")
     .map((entry) => ({ date: entry.date, value: Number(entry.value) }))
@@ -130,12 +71,6 @@ export async function getWtiQuote() {
 }
 
 export async function getWtiCloses() {
-  // Deliberately the one canned dry-run response that exercises the
-  // "treated as a failure, not data" path (checkAlphaVantageError, via
-  // parseWtiSeries) instead of a canned success - see
-  // dryRunFixtures.js's comment on DRY_RUN_WTI_HISTORY_RATE_LIMIT_BODY.
-  // Only affects MARKET_DATA_DRY_RUN=true; the real WTI history fetch is
-  // unchanged.
   const data = await fetchAlphaVantageBody(
     (key) => `${ALPHA_VANTAGE}?function=WTI&interval=daily&apikey=${key}`,
     DRY_RUN_WTI_HISTORY_RATE_LIMIT_BODY

@@ -4,7 +4,7 @@ import { adminFetch } from "../../lib/api";
 
 export default function AdminGlossary() {
   const [terms, setTerms] = useState([]);
-  const [draft, setDraft] = useState(null); // { term, short_definition, body, seo_title, seo_description }
+  const [draft, setDraft] = useState(null);
   const [termInput, setTermInput] = useState("");
   const [generating, setGenerating] = useState(false);
 

@@ -1,36 +1,23 @@
-// Permanent regression tests for the Analysis fact-check guardrails
-// (findAnalysisDistanceMismatch/findAnalysisFactMismatch/findMissingQualifier).
-// This codebase has no test framework wired up yet, so this uses Node's
-// built-in test runner (node:test, stable since Node 18) rather than
-// adding a new dependency for one file - run with `node --test` from
-// backend/ (or `npm test`, see package.json).
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { findAnalysisDistanceMismatch, findAnalysisSimilarityMismatch, movedMeaningfully, hasFormulaicOpening, hasFormulaicClosing, extractClosingSummaryParagraph, selectRelatedCoverage } from "./runAnalysis.js";
 
 test("findAnalysisDistanceMismatch catches 'the resistance level' phrasing (real bug)", () => {
-  // Found live in a real published Ethereum piece: DISTANCE_CLAIM_RE used
-  // to require "its" (or nothing) directly before support/resistance, so
-  // "the resistance level" - a "the" instead of "its", plus a trailing
-  // "level" - never matched at all. The check never ran on this sentence;
-  // it wasn't a tolerance miss, it was a phrasing gap.
   const snapshot = { symbol: "ETH", price: 2500.41, support: 2470, resistance: 2525.27, assetClass: "crypto" };
   const body = "ETH is currently about 4% away from the resistance level, suggesting a tight trading range.";
   const note = findAnalysisDistanceMismatch(body, snapshot);
   assert.notEqual(note, null, "expected a mismatch to be flagged, got null (the phrasing gap regressed)");
   assert.match(note, /4%/);
-  assert.match(note, /1\.0%/); // real distance: (2525.27 - 2500.41) / 2500.41 ~= 0.99%, rounds to 1.0
+  assert.match(note, /1\.0%/);
 });
 
 test("findAnalysisDistanceMismatch still catches the original 'its resistance' bug", () => {
-  // The bug this check was originally built for - reused one distance
-  // figure for both support and resistance instead of computing each.
   const snapshot = { symbol: "BTC", price: 78116.82, support: 75590.24, resistance: 80329.35, assetClass: "crypto" };
   const body = "Bitcoin is approximately 3.2% away from its resistance and 3.2% above its support, indicating a tight trading range.";
   const note = findAnalysisDistanceMismatch(body, snapshot);
   assert.notEqual(note, null, "expected the reused-figure mismatch to still be flagged");
   assert.match(note, /3\.2%/);
-  assert.match(note, /2\.8%/); // real resistance distance
+  assert.match(note, /2\.8%/);
 });
 
 test("findAnalysisDistanceMismatch passes a corrected, accurate version clean", () => {
@@ -40,9 +27,6 @@ test("findAnalysisDistanceMismatch passes a corrected, accurate version clean", 
 });
 
 test("findAnalysisDistanceMismatch still matches bare phrasing with no article at all", () => {
-  // The original regex's "its" was already optional - confirms the
-  // broadened pattern (adding "the" + optional "level") didn't
-  // accidentally make an article/possessive mandatory.
   const snapshot = { symbol: "BTC", price: 78116.82, support: 75590.24, resistance: 80329.35, assetClass: "crypto" };
   const body = "Bitcoin trades 2.8% below resistance and 3.2% above support currently.";
   assert.equal(findAnalysisDistanceMismatch(body, snapshot), null);
@@ -61,13 +45,6 @@ test("findAnalysisDistanceMismatch returns null when the body has no distance cl
   assert.equal(findAnalysisDistanceMismatch("Bitcoin is trading sideways today.", snapshot), null);
 });
 
-// Real bug, found in a real published Bitcoin piece (article 285): price
-// had broken above resistance (a genuine breakout, made more common by the
-// support/resistance window fix in prices.js - price now legitimately
-// sits outside the band more often), and the article correctly computed
-// the $833.79 gap but described it as "below" resistance instead of
-// "above" - backwards. DISTANCE_CLAIM_RE (percent-only) never even looks
-// at this sentence; these two tests cover the dollar-amount path.
 test("findAnalysisDistanceMismatch passes a correct 'above resistance' dollar claim on a real breakout", () => {
   const snapshot = { symbol: "BTC", price: 81163.14, support: 75590.24, resistance: 80329.35, assetClass: "crypto" };
   const body = "Bitcoin is just $833.79 above its immediate resistance level, having broken out to a new high.";
@@ -83,13 +60,6 @@ test("findAnalysisDistanceMismatch catches the exact real backwards-direction cl
   assert.match(note, /backwards/);
 });
 
-// Real regression: articles 171 and 186, both genuine published Bitcoin
-// pieces from this project's real backlog, an old short-format template
-// with only price/RSI/support/resistance swapped - confirmed a real
-// near-clone (0.66 whole-body Jaccard word-overlap, well above every
-// normal pair's ~0.14-0.45 range measured across the rest of the real BTC
-// backlog before picking the 0.55 threshold - see findAnalysisSimilarityMismatch's
-// comment in runAnalysis.js for the full calibration).
 test("findAnalysisSimilarityMismatch flags a real near-clone article (articles 171 vs 186)", () => {
   const prior = {
     id: 171,
@@ -121,13 +91,6 @@ test("findAnalysisSimilarityMismatch passes clean when there is no prior article
   assert.equal(findAnalysisSimilarityMismatch("Anything at all.", undefined), null);
 });
 
-// Regression tests for the trend-flip condition added to movedMeaningfully()
-// during the duplicate-coverage audit: trend is defined purely by price vs.
-// the 50-day moving average, and the MA moves slowly enough that price can
-// cross it without moving 2%, without breaking support/resistance, and
-// without crossing an RSI zone boundary - so a genuine flip needed its own
-// explicit check rather than assuming one of the other three would always
-// catch it.
 test("movedMeaningfully always generates the first-ever article when there's no prior snapshot", () => {
   assert.equal(movedMeaningfully(null, { price: 100, support: 90, resistance: 110, rsi_14: 50, trend: "Bullish" }), true);
 });
@@ -135,10 +98,6 @@ test("movedMeaningfully always generates the first-ever article when there's no 
 test("movedMeaningfully returns true on a trend flip even when price/RSI/support/resistance stay within every other threshold", () => {
   const prev = { price: 100, support: 90, resistance: 110, rsi_14: 50, trend: "Bullish" };
   const curr = { price: 100.5, support: 90, resistance: 110, rsi_14: 50, trend: "Bearish" };
-  // Sanity-check the premise: this pair genuinely doesn't trip the other
-  // three conditions on its own (0.5% price move, same RSI zone, price
-  // still inside the support/resistance band) - if it did, this test
-  // wouldn't actually prove the trend-flip branch caused the true.
   const priceChangePct = Math.abs((curr.price - prev.price) / prev.price) * 100;
   assert.ok(priceChangePct < 2);
   assert.ok(curr.price < curr.resistance && curr.price > curr.support);
@@ -156,12 +115,6 @@ test("movedMeaningfully does not trigger on trend alone when the prior snapshot 
   assert.equal(movedMeaningfully(prev, curr), false, "a null-to-real-value transition is a schema catch-up, not a genuine flip, and shouldn't force a regeneration on its own");
 });
 
-// Regression tests for the structural opening/closing clause detectors -
-// added after corpus-level phrase mining across the 82 published articles
-// that existed on 2026-09-19 found the opening template in 50-51/82
-// articles and the closing wrap-up template in 38-41/82. Every body
-// snippet below is real, taken verbatim from that mining run (articles
-// 351, 344, 353, 343), not synthesized.
 test("hasFormulaicOpening detects the real 'is currently priced at... maintaining a bullish trend' template (article 351)", () => {
   const body = "Bitcoin is currently priced at $80,965.08, maintaining a bullish trend as it trades above its 50-day moving average. This price reflects a strong market sentiment.";
   assert.equal(hasFormulaicOpening(body), true);
@@ -187,12 +140,6 @@ test("hasFormulaicClosing detects the real 'Overall, the current price... sugges
   assert.equal(hasFormulaicClosing(body), true);
 });
 
-// Regression tests for selectRelatedCoverage - real regression: articles
-// 372-380 (BTC) kept being fed the SAME relatedCoverage article (the
-// "despite a 1.5% decline in September, Bitcoin is on track for its first
-// quarterly gain in a year" story) on every generation, because
-// findRelatedCoverage() only ever checked "is this within 48h," never
-// "have I already used this specific coverage for this instrument."
 const QUARTERLY_GAIN_STORY = {
   id: 211,
   title: "Bitcoin Down 1.5% in September, On Track for Quarterly Gain",
@@ -205,18 +152,12 @@ const OUTFLOWS_STORY = {
   dek: "Ether funds have recorded outflows for three consecutive sessions, even as Bitcoin rallies.",
   sources: ["CoinDesk"],
 };
-// A second outlet is required so each candidate individually clears the
-// 2-distinct-source bar findRelatedCoverage() already enforces - real
-// coverage rarely comes from a single outlet across both a "used" and a
-// "fresh" story, but the test needs both candidates to independently
-// qualify to isolate what's being tested (the exclusion, not the source
-// count bar).
 const QUARTERLY_GAIN_STORY_2 = { ...QUARTERLY_GAIN_STORY, sources: ["CoinDesk", "The Block"] };
 const OUTFLOWS_STORY_2 = { ...OUTFLOWS_STORY, sources: ["CoinDesk", "The Block"] };
 
 test("selectRelatedCoverage excludes an already-used fact when a fresh alternative exists (real articles 211/185)", () => {
   const candidates = [QUARTERLY_GAIN_STORY_2, OUTFLOWS_STORY_2];
-  const alreadyUsed = new Set([211]); // the quarterly-gain story was used in the last article
+  const alreadyUsed = new Set([211]);
   const result = selectRelatedCoverage(candidates, alreadyUsed);
   assert.equal(result.length, 1);
   assert.equal(result[0].id, 185);
@@ -258,10 +199,6 @@ test("hasFormulaicClosing returns false for a closing paragraph with no wrap-up 
   assert.equal(hasFormulaicClosing(body), false);
 });
 
-// Found during the step-4 manual qualitative read of fresh output
-// (2026-09-19, real articles 376/377) - two more wrap-up words carrying
-// the exact same restate-the-numbers pattern that the original word list
-// (calibrated from step-1 corpus mining alone) didn't yet recognize.
 test("hasFormulaicClosing detects 'Taking into account' (real article 376)", () => {
   const body = "Paragraph one.\n\nParagraph two.\n\nTaking into account the current price, RSI, and proximity to support and resistance, Bitcoin appears to be in a stable position for potential upward movement.\n\nThis analysis is not financial advice.";
   assert.equal(hasFormulaicClosing(body), true);

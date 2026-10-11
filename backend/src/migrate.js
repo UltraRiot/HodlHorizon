@@ -1,5 +1,3 @@
-// Runs every .sql file in src/migrations, in filename order.
-// Safe to run more than once - every statement uses IF NOT EXISTS / ON CONFLICT.
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";

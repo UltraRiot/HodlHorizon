@@ -1,15 +1,8 @@
-// Groups RSS items that look like the same story from different sources.
-// Deliberately simple (word-overlap on the headline) rather than a real NLP
-// similarity model - easy to read, easy to tune, good enough to find the
-// "2+ sources agree" signal the auto-publish rule relies on.
 const STOPWORDS = new Set([
   "the", "a", "an", "to", "of", "in", "on", "for", "and", "is", "as", "at",
   "by", "with", "after", "over", "amid", "its", "it's", "into",
 ]);
 
-// Exported (not just used internally) so other places that need the same
-// word-overlap heuristic - the "previous coverage" lookup and the pre-save
-// duplicate check in services/shared/articleUtils.js - don't reimplement it.
 export function normalize(title) {
   return title
     .toLowerCase()
@@ -18,10 +11,6 @@ export function normalize(title) {
     .filter((w) => w.length > 2 && !STOPWORDS.has(w));
 }
 
-// The bar for "these two texts are saying the same thing" - used for the
-// pre-save near-duplicate check against other articles (articleUtils.js)
-// and for the paragraph-1-vs-paragraph-2 check in provider.js. Exported as
-// one named constant so both call sites move together if it's ever tuned.
 export const DUPLICATE_SIMILARITY_THRESHOLD = 0.6;
 
 export function jaccardSimilarity(wordsA, wordsB) {
@@ -32,7 +21,6 @@ export function jaccardSimilarity(wordsA, wordsB) {
   return union === 0 ? 0 : intersection / union;
 }
 
-// Returns an array of groups, each an array of the original items.
 export function groupSimilarItems(items, threshold = 0.4) {
   const groups = []; // [{ words, items: [...] }]
 

@@ -1,6 +1,3 @@
-// Public article endpoints: the homepage feed and individual article pages.
-// Only ever returns status = 'published' - drafts and review items stay
-// invisible until an admin publishes them.
 import { Router } from "express";
 import { query } from "../db.js";
 import { perIpPerResourceLimiter } from "../middleware/rateLimit.js";
@@ -26,12 +23,6 @@ router.get("/", async (req, res) => {
     params.push(category);
     where += ` AND c.slug = $${params.length}`;
   } else {
-    // The "all"/unspecified case is the homepage's generic feed - exclude
-    // hidden categories (Analysis) from it so hiding the nav link actually
-    // hides the content, not just the way to browse to it. An explicit
-    // ?category=analysis request still works unfiltered (existing
-    // permalinks/direct links must keep working per the "fully
-    // reversible, nothing deleted" requirement).
     params.push(HIDDEN_CATEGORY_SLUGS);
     where += ` AND c.slug != ALL($${params.length}::text[])`;
   }
@@ -52,9 +43,6 @@ router.get("/", async (req, res) => {
   res.json(rows.map((r) => ({ ...r, time_ago: timeAgo(r.published_at) })));
 });
 
-// GET /api/articles/most-read - top 5 by views in the last 24h, for the
-// homepage sidebar widget. Registered before /:slug so "most-read" is never
-// swallowed by that param route.
 router.get("/most-read", async (req, res) => {
   const { rows } = await query(
     `SELECT a.id, a.slug, a.title, c.slug AS category_slug, c.name AS category_name,
@@ -88,7 +76,6 @@ router.get("/:slug", async (req, res) => {
 
   const article = rows[0];
 
-  // One row per page load, no unique-visitor dedup - see migrations/004.
   await query("INSERT INTO article_views (article_id) VALUES ($1)", [article.id]);
 
   const { rows: sources } = await query(
@@ -99,17 +86,6 @@ router.get("/:slug", async (req, res) => {
   res.json({ ...article, time_ago: timeAgo(article.published_at), sources });
 });
 
-// GET /api/articles/:slug/related?limit=4
-// Same category only, most recent first. This used to backfill with the
-// most recent articles from ANY category when the same category didn't
-// have enough (to avoid a thin-looking "Related Articles" section) - that
-// backfill was the bug: it silently mixed other-category articles into a
-// section explicitly labeled "Related," which is exactly what "related"
-// isn't supposed to mean. Fixed by dropping the backfill entirely - a
-// sparse category now just returns fewer (or zero) related articles
-// instead of padding with unrelated ones under a misleading label. If
-// cross-category "trending" content is wanted later, that belongs in its
-// own honestly-labeled section, not folded into this one.
 router.get("/:slug/related", async (req, res) => {
   const limit = Math.min(Number(req.query.limit) || 4, 10);
 
@@ -136,13 +112,6 @@ router.get("/:slug/related", async (req, res) => {
   res.json(rows.map((r) => ({ ...r, time_ago: timeAgo(r.published_at) })));
 });
 
-// POST /api/articles/:id/react   { type: "bullish" | "bearish" | "neutral" }
-// Anonymous, one click = one vote. No accounts, so there's still no way to
-// tell a genuine second reaction from the same person apart from a bot
-// hammering this endpoint - reactionLimiter (5/IP/article/day) caps the
-// worst case (a script inflating one article's counts arbitrarily) without
-// needing accounts or a device fingerprint; a real visitor reacting once
-// or twice is never affected.
 router.post("/:id/react", reactionLimiter, async (req, res) => {
   const { type } = req.body;
   const column = { bullish: "bullish_count", bearish: "bearish_count", neutral: "neutral_count" }[type];

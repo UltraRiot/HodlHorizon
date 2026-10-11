@@ -1,13 +1,3 @@
-// Regression tests for contentLacksCategoryKeywords's CATEGORY_KEYWORDS
-// vocabulary - built after a real batch test surfaced two genuine gaps:
-// article #434 (Paramount/Warner Bros settlement) was real, on-topic
-// Stocks content that had zero hits against the original Stocks list
-// (which only covered trading/market-structure words, not corporate-
-// affairs vocabulary like "merger"/"settlement"), and article #440
-// (Nigeria mining deaths) was real, on-topic Commodities content with
-// zero hits against the original Commodities list (which named specific
-// commodities like gold/oil but had no generic mining vocabulary). Both
-// bodies below are copied verbatim from the real articles.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { contentLacksCategoryKeywords } from "./articleUtils.js";
@@ -42,10 +32,6 @@ test("contentLacksCategoryKeywords still requires 2+ body hits when the title ha
   assert.equal(contentLacksCategoryKeywords("Crypto", title, body), true);
 });
 
-// Regression test for the strong-keyword weighting fix - real article #442
-// (Hormuz shipping costs) had exactly one body hit ("commodities") and
-// zero title hits, and was rejected purely by the blanket 2+ rule despite
-// being genuinely on-topic. Body copied verbatim from the real article.
 test("contentLacksCategoryKeywords no longer flags the real Hormuz shipping-costs story for a single explicit 'commodities' mention (article 442)", () => {
   const title = "Shipping Costs Surge to $5 Million Per Passage Amid Hormuz Crisis";
   const body = "Shipping costs have soared to record highs, with some vessel operators willing to pay $4-5 million for a single passage through the Panama Canal due to disruptions in the Strait of Hormuz.\n\nThis surge in costs is significant for traders and investors, as it impacts the overall cost of transporting energy commodities, potentially affecting prices in global markets.\n\nIn the past six months, energy cargo traffic has increased through the Panama and Suez Canals, highlighting the ongoing strain on shipping routes.";
@@ -53,10 +39,6 @@ test("contentLacksCategoryKeywords no longer flags the real Hormuz shipping-cost
 });
 
 test("contentLacksCategoryKeywords does not let the strong-keyword exception reopen the single-incidental-namedrop gap for non-strong keywords", () => {
-  // "gold" mentioned exactly once, incidentally, with no other Commodities
-  // keyword and no title hit - the strong-keyword exception only applies
-  // to the category's own name ("commodity"/"commodities"), so this must
-  // still be flagged, same as before the weighting change.
   const title = "Museum Unveils New Ancient Artifact Exhibit";
   const body = "A local museum opened a new exhibit featuring ancient artifacts this week.\n\nOne display case includes a small gold ornament recovered from a nearby archaeological site.\n\nThe exhibit runs through the end of the year and is free to the public.";
   assert.equal(contentLacksCategoryKeywords("Commodities", title, body), true);

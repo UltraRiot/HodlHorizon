@@ -1,9 +1,6 @@
 import { useState } from "react";
 import { apiPost } from "../lib/api";
 
-// Anonymous "how do you read this story" reactions - no accounts needed.
-// We only stop a user voting twice per browser tab (localStorage flag);
-// there is no server-side protection against someone voting repeatedly.
 export default function ReactionButtons({ articleId, initialCounts }) {
   const [counts, setCounts] = useState(initialCounts);
   const storageKey = `hodlhorizon_reacted_${articleId}`;

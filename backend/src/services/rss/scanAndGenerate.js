@@ -1,18 +1,3 @@
-// The heart of the news engine. Runs once per category (each category only
-// scans its own pre-assigned sources - see migrations/002 and seed.js), and
-// for each:
-//   1. Fetches that category's active RSS sources
-//   2. Drops anything already turned into an article
-//   3. Groups the rest into "stories" (headlines that look like the same event)
-//   4. Writes a short brief for each new story with the AI provider, telling
-//      it if this site already covered the story recently (write an update)
-//   5. Discards near-duplicate drafts instead of saving them
-//   6. Auto-publishes if enough independent sources reported the story,
-//      otherwise leaves it in "review" for a human to check
-//   7. Stops once the category's daily article cap is hit
-//
-// The Analysis category is skipped here entirely - it has no RSS sources and
-// is handled by the separate job in services/analysis/runAnalysis.js.
 import { query } from "../../db.js";
 import pool from "../../db.js";
 import { fetchSourceItemsForCategory, fetchDualStocksIndicesItems } from "./fetchSources.js";
@@ -35,27 +20,13 @@ import {
   contentLacksCategoryKeywords,
 } from "../shared/articleUtils.js";
 
-// Used only if a category has no daily_cap_<slug> row in settings yet.
 const DEFAULT_DAILY_CAPS = { crypto: 6, stocks: 4, indices: 2, commodities: 2 };
 
-// Used only if settings has no auto_publish_delay_hours row yet (see
-// migrations/010_delayed_auto_publish.sql, which seeds it to the same
-// value - this is just the in-code fallback if that row is ever deleted).
 const DEFAULT_AUTO_PUBLISH_DELAY_HOURS = 5;
 
-// Weekend market-closed gate: Stocks/Indices/Commodities markets are shut
-// Saturday/Sunday, so there's nothing genuinely new to report - drop to a
-// near-zero cap those two days instead of the normal weekday one. Crypto
-// is deliberately excluded (trades 24/7, no weekend throttle at all).
 const WEEKEND_THROTTLED_CATEGORIES = new Set(["stocks", "indices", "commodities"]);
 const DEFAULT_WEEKEND_CAPS = { stocks: 1, indices: 1, commodities: 1 };
 
-// Yahoo Finance / Investing.com Stock Market News are general finance wires
-// tagged Stocks (their owning category) but shared with Indices too - a
-// single story from either could be about one stock or an index. This is a
-// narrow, deliberately small keyword check that only ever breaks the tie
-// between those two categories for dual-tagged sources - it's not a
-// reintroduction of the old global guessCategory() keyword guesser.
 const INDEX_WORDS = ["s&p", "nasdaq", "dow jones", "index", "indices", "ftse", "stoxx"];
 
 function looksLikeIndexStory(item) {
@@ -63,13 +34,6 @@ function looksLikeIndexStory(item) {
   return INDEX_WORDS.some((w) => text.includes(w));
 }
 
-// Peak windows around real market open/close moments - a priority signal,
-// not a hard gate. Inside one of these UTC time-of-day windows, groups get
-// sorted freshest-first before the daily cap is applied, so a story that
-// broke right at the open/close doesn't lose out to an older one that
-// happens to be processed first; outside these windows, groups keep their
-// natural (unsorted) order exactly as before this feature existed.
-// Windows are "HH:MM" 24h UTC settings-table values - see migrations/008.
 const DEFAULT_PEAK_WINDOWS = {
   euro_open: ["06:30", "07:30"],
   us_open: ["13:00", "14:00"],
@@ -99,11 +63,6 @@ function latestPubDate(group) {
   return Math.max(...group.map((i) => i.pubDate.getTime()));
 }
 
-// Freshness gate: an item older than this is never allowed into story
-// grouping, so a stale RSS entry (a feed re-publishing an old item, a
-// crawl backlog, a first-ever scan pulling a source's whole history) can
-// never become a new article. Exported so it's directly testable against a
-// crafted item.
 export const FRESHNESS_WINDOW_HOURS = 72;
 
 export function filterFreshItems(items, now = new Date()) {
@@ -112,13 +71,6 @@ export function filterFreshItems(items, now = new Date()) {
   return { fresh, staleCount: items.length - fresh.length };
 }
 
-// Price plausibility check (Crypto only): the AI has no live price feed -
-// it only sees an RSS headline/snippet - so a specific dollar figure it
-// states for BTC/ETH is either lifted correctly from the source text or
-// quietly hallucinated as "plausible-sounding" language. Comparing against
-// the real live price (the same getCryptoTicker() call the homepage ticker
-// uses) catches the hallucinated case. Same flag-only pattern as
-// category_mismatch: never auto-corrects the number, just routes to review.
 const PRICE_MISMATCH_THRESHOLD = 0.15; // >15% off current market price
 
 // Dollar figures like "$32,000" or "$1,850.50".
@@ -128,10 +80,6 @@ const CRYPTO_MENTION_PATTERNS = {
   ETH: /\b(ethereum|eth)\b/i,
 };
 
-// Sentence-level proximity heuristic: these articles are at most 3 short
-// paragraphs (~130 words), so a coin name and the price attributed to it
-// have always shared a sentence in practice - good enough without a real
-// NLP dependency, the same trade-off grouping.js makes for story matching.
 export function extractCryptoPriceMentions(text) {
   const sentences = (text || "").split(/(?<=[.!?])\s+/);
   const mentions = [];
@@ -147,39 +95,18 @@ export function extractCryptoPriceMentions(text) {
   return mentions;
 }
 
-// tickerBySymbol: { BTC: 77123.45, ETH: 3456.78 } - from getCryptoTicker().
-// Returns a human-readable note for the first mismatch found, or null.
 export function findPriceMismatch(mentions, tickerBySymbol) {
   for (const { symbol, value } of mentions) {
     const live = tickerBySymbol[symbol];
     if (!live) continue;
     const diff = Math.abs(value - live) / live;
     if (diff > PRICE_MISMATCH_THRESHOLD) {
-      // formatMarketValue instead of a hand-rolled toLocaleString call, so
-      // this note is formatted the exact same way as every other price on
-      // the site - see backend/src/services/marketData/formatMarketValue.js.
       return `Stated price ${formatMarketValue(value, "crypto")} differs significantly from current market price ${formatMarketValue(live, "crypto")} for ${symbol} (${Math.round(diff * 100)}% off) - verify before publishing.`;
     }
   }
   return null;
 }
 
-// Same hallucination risk as crypto (the model has no live price feed, so
-// a specific figure is either lifted from the source text or invented),
-// extended to Gold/Oil - caught live on "Gold Prices Fluctuate Like Meme
-// Coins After Fed Decision" stating gold "around $1,850" while spot gold
-// was actually near $4,370 that day. Both Gold and Oil now have a genuine
-// live number to diff directly, the same as crypto: Oil's cached price
-// (Alpha Vantage WTI, via getCommoditySnapshot()) has always been a real
-// $/barrel figure, and Gold's cache row now holds Twelve Data's real spot
-// gold quote (XAU/USD) instead of the GLD ETF's share price it used to -
-// GLD traded at roughly a tenth of spot gold and drifted further over
-// time (see instruments.js), which is exactly why diffing against it used
-// to be unsafe and Gold fell back to a source-text-only check. The
-// source-text fallback below still applies to both when a live price
-// isn't available for some reason (a stale/failed cache row) - it costs
-// nothing extra and catches a fabricated number that happens to slip
-// inside the tolerance band.
 const COMMODITY_MENTION_PATTERNS = {
   GOLD: /\b(gold|xau)\b/i,
   OIL: /\b(oil|wti|crude)\b/i,
@@ -200,9 +127,6 @@ export function extractCommodityPriceMentions(text) {
   return mentions;
 }
 
-// A handful of common ways a source snippet might render the same number
-// ($1,850 / $1850 / $1850.00 / a bare 1850) rather than requiring an exact
-// string match against the dollar-formatted figure the model produced.
 function priceAppearsInText(value, text) {
   if (!text) return false;
   const candidates = new Set([
@@ -228,27 +152,11 @@ export function findCommodityPriceMismatch(mentions, tickerBySymbol, sourceText)
   return null;
 }
 
-// Same idea, extended to Indices - the S&P 500/Nasdaq figures a Stocks/
-// Indices-category article states. This one has always had a trustworthy
-// live number to diff against: getEquityTicker() returns real converted
-// index points (see instruments.js's etfProxy conversion), not SPY/QQQ's
-// own share price, so a direct comparison is meaningful the same way it
-// now is for Gold too (see findCommodityPriceMismatch() above). The
-// source-text fallback still applies too, for the same reason it does for
-// crypto/commodities: it costs nothing extra and catches a fabricated
-// number that happens to slip inside the tolerance band.
 const INDEX_MENTION_PATTERNS = {
   SP500: /\b(s&p\s?500|s&p)\b/i,
   NASDAQ: /\bnasdaq(-|\s)?100\b|\bnasdaq\b/i,
 };
 
-// Indices are quoted in bare points, not dollars, so unlike
-// DOLLAR_AMOUNT_RE this doesn't require a "$" - but to avoid matching an
-// unrelated small number in the same sentence (a year, an RSI reading, a
-// percentage), it requires comma-grouped thousands (real index levels are
-// always 4+ digits and this site's own style always comma-formats a
-// number that size - see STYLE_INSTRUCTIONS in ai/prompts.js) which a
-// plain year or day-count is never written with.
 const INDEX_AMOUNT_RE = /\$?\s?([0-9]{1,3}(?:,[0-9]{3})+(?:\.[0-9]+)?)/g;
 
 export function extractIndexPriceMentions(text) {
@@ -280,17 +188,6 @@ export function findIndexPriceMismatch(mentions, tickerBySymbol, sourceText) {
   return null;
 }
 
-// Generalizes the price-mismatch principle to a different class of
-// "specific, checkable number": a stated price-movement percentage. No
-// asset symbol required (unlike the price checks above) - a category-
-// agnostic movement verb nearby is the signal instead, since a percentage
-// alone is far too generic a pattern to safely extract without one (an
-// ownership stake, an RSI reading, a probability, and a genuine price move
-// all look identical as a bare "N%"). There's also no live "today's %
-// change for this exact claim" to diff against in general the way a price
-// has a live ticker - a stated percentage could describe a day's move, a
-// week's, a company's revenue growth, anything - so like gold, this is
-// checked against source text only.
 const PRICE_MOVEMENT_VERBS_RE = /\b(rose|rise|rising|risen|fell|fall|falling|fallen|gained|gain|gaining|dropped|drop|dropping|surged|surge|surging|plunged|plunge|plunging|climbed|climb|climbing|slipped|slip|slipping|jumped|jump|jumping|declined|decline|declining|advanced|advance|advancing|slid|slide|sliding|tumbled|tumble|tumbling)\b/i;
 const PERCENT_RE = /(\d+(?:\.\d+)?)\s?%/g;
 
@@ -307,15 +204,6 @@ export function extractPercentMentions(text) {
   return mentions;
 }
 
-// Deliberately NOT priceAppearsInText() - that one's rounded-to-integer
-// fallback candidate (e.g. "4" for a stated 4.2%) is fine for a dollar
-// price (a bare "$4" match is already a distinctive, rare string in
-// running prose) but far too loose for a percentage, where a bare digit
-// like "4" is nearly guaranteed to coincidentally appear somewhere in any
-// non-trivial source text (a date, a source count, an unrelated figure) -
-// that would make this check pass almost anything. Requiring the number
-// to actually sit next to a "%" or "percent" in the source is a real
-// verification instead.
 function percentAppearsInText(value, text) {
   if (!text) return false;
   const candidates = [value.toFixed(1), String(value), String(Math.round(value))];
@@ -330,48 +218,12 @@ export function findPercentMismatch(mentions, sourceText) {
   return null;
 }
 
-// Stale/thin source content: real incident that motivated this (article
-// 207, "Central Banks Increase Gold Reserves Amid Geopolitical Tensions")
-// - its one source (Investing.com - Commodities) supplied NO content past
-// a headline (confirmed live: every item from that feed, and from Yahoo
-// Finance and Investing.com's Stock Market News feed, comes through
-// rss-parser with an empty contentSnippet - not a truncation problem,
-// there's nothing to truncate). STYLE_INSTRUCTIONS already says "only use
-// facts present in the source material... never invent a number," but
-// with nothing but a bare headline to work from, the model still wrote a
-// full body with a specific figure ("400 tons... in the first half of
-// 2023") and a named attribution, neither present anywhere in the source -
-// it filled the gap from its own training knowledge. The number was real,
-// just years stale and presented as today's news. No existing guardrail
-// catches this: findPercentMismatch/findCommodityPriceMismatch etc. all
-// check a STATED number against source text, but a bare quantity like
-// "400 tons" (no $ sign, no %) matches none of their patterns, and none of
-// them ask the more basic question this does - was there ANY real source
-// content for the model to have drawn a specific claim from at all.
-//
-// Below MIN_SUBSTANTIVE_SNIPPET_LENGTH counts as "no real content" - the
-// live sample that sized this (see fetchSources.js's MAX_SNIPPET_LENGTH
-// comment) showed a clean gap between feeds with genuinely empty snippets
-// (0 chars) and every feed with real content (110+ chars) - there was no
-// borderline case in practice to tune more precisely for.
 const MIN_SUBSTANTIVE_SNIPPET_LENGTH = 30;
 
 export function groupHasNoSubstantiveContent(group) {
   return group.every((i) => (i.contentSnippet || "").trim().length < MIN_SUBSTANTIVE_SNIPPET_LENGTH);
 }
 
-// Second, independent signal: even when a source DOES supply real content,
-// that content can still be explicitly ABOUT a past period rather than
-// current news (a retrospective, a "looking back" piece) - a genuinely
-// fresh RSS entry (todays's pubDate, passes FRESHNESS_WINDOW_HOURS above)
-// whose subject is old. Same asymmetric title-vs-body trust already
-// established in this file for category keywords (see
-// contentLacksCategoryKeywords in articleUtils.js): a past-year mention in
-// the HEADLINE is trusted outright (the headline is what the story is
-// fundamentally about), but a single incidental past-year mention buried
-// in a snippet - a story using an old data point as background context for
-// an otherwise current one, which is legitimate and common - needs 2+ such
-// mentions before it's treated as a real signal, not just one.
 const CURRENT_YEAR = new Date().getUTCFullYear();
 const RELATIVE_PAST_RE = /\b(last year|a year ago)\b/i;
 
@@ -401,25 +253,6 @@ export function findStaleOrThinSource(group) {
   return findStaleSubjectMention(group);
 }
 
-// Pure status decision, extracted from the loop below so it's directly
-// testable (the same reason filterFreshItems()/findPriceMismatch() above
-// are exported rather than left inline).
-//
-// A mock-provider draft is placeholder content and must never reach
-// "published," no matter what auto-publish/source-count logic says. Same
-// for a category mismatch, a price mismatch, or a failed verification
-// check (verificationClean === false) - all need a human to check before
-// this goes anywhere near "published." Every one of these checks is
-// independent of the normal publish logic on purpose, so a publish path
-// added later can't accidentally bypass them.
-//
-// Delayed auto-publish: a single-source article that trips zero flags no
-// longer sits in indefinite manual review - it gets a countdown instead
-// ("scheduled" + auto_publish_at), flipped to "published" by
-// publishDueScheduledArticles() below once the time passes, unless a human
-// edits/holds/deletes it first (routes/admin/articles.js clears
-// auto_publish_at the moment that happens). A flagged article, at any
-// source count, still goes straight to plain "review" with no timer.
 export function decideArticleStatus({
   isMockProvider,
   categoryMismatch,
@@ -452,10 +285,6 @@ async function alreadyStored(links) {
   return new Set(rows.map((r) => r.source_url));
 }
 
-// Mirrors runAnalysis.js's getRecentlyUsedOpeningTemplateIds/
-// getRecentlyUsedClosingTemplateIds exactly (same query shape, same
-// status = 'published' scoping) - see newsParagraph2Templates.js for what
-// this drives.
 async function getRecentlyUsedParagraph2TemplateIds(categoryId, limit = 5) {
   const { rows } = await query(
     `SELECT paragraph2_template_id FROM articles
@@ -466,29 +295,6 @@ async function getRecentlyUsedParagraph2TemplateIds(categoryId, limit = 5) {
   return rows.map((r) => r.paragraph2_template_id);
 }
 
-// Real regression this exists for: this function's own SELECT above is a
-// check, not a lock - it only protects against a source_url that was
-// ALREADY committed by the time this scan's snapshot was taken. Two scan
-// invocations running close enough together (confirmed live: two manual
-// "run the scan again" calls a few seconds apart, from ordinary testing in
-// this project, not a contrived scenario) can both see the same URL as
-// "not yet stored," both generate a full article from it, and both
-// insert - the exact real duplicates found in the backlog (articles
-// 273/274, 275/276, 277/278, 279/280, cleaned up in migrations/019 -
-// same source_url, articles created 5-8 seconds apart). No amount of
-// rewriting the SELECT closes this: the gap is between check and insert,
-// so only the database itself, at the moment of insert, can close it -
-// hence the UNIQUE constraint on article_sources.source_url (also
-// migrations/019) and this function, which inserts the article and all of
-// its sources in one transaction and rolls the whole thing back the
-// instant any source_url insert reports a conflict (rowCount 0, meaning
-// another connection won the race first). Returns the new article's id,
-// or null if this attempt lost the race (the caller treats that exactly
-// like any other discarded duplicate).
-// Exported for the concurrent-insert regression test (scanAndGenerate.test.js) -
-// the only way to actually prove a database-level race fix is to run two
-// real overlapping transactions against a real connection pool, not to
-// unit-test a mocked-out query function.
 export async function insertArticleWithSourcesOrDiscard(articleFields, group) {
   const client = await pool.connect();
   try {
@@ -537,23 +343,11 @@ export async function runScanAndGenerate() {
     scheduled: 0,
   };
 
-  // Delayed auto-publish window for clean single-source articles (see the
-  // status-decision block in the loop below). A settings-table value
-  // (fetched once per scan, same as auto_publish) so it's adjustable from
-  // the admin panel without a deploy.
   const autoPublishDelayHours = Number(await getSetting("auto_publish_delay_hours", DEFAULT_AUTO_PUBLISH_DELAY_HOURS));
 
-  // Fetched once up front and reused by both Stocks and Indices below, so
-  // the same dual-tagged feeds aren't parsed twice per scan.
   const dualItems = await fetchDualStocksIndicesItems();
   const dualLinks = new Set(dualItems.map((i) => i.link));
 
-  // Live BTC/ETH prices for the price-plausibility check below - fetched
-  // once per scan (prices don't move enough within one scan to matter) and
-  // reused for every Crypto article. A failed fetch disables the check for
-  // this scan rather than failing the whole run - the same "one bad thing
-  // shouldn't take down the scan" principle as the per-story try/catch
-  // around generateArticle().
   let cryptoTickerBySymbol = {};
   if (categories.some((c) => c.slug === "crypto")) {
     try {
@@ -564,13 +358,6 @@ export async function runScanAndGenerate() {
     }
   }
 
-  // Same idea for Commodities. GOLD used to be deliberately left out here
-  // (see findCommodityPriceMismatch()'s comment - being rewritten
-  // alongside this) because its only cached price was the GLD ETF's share
-  // price, not a valid number to diff a stated spot-gold figure against.
-  // That's no longer true: Gold's cache row now holds Twelve Data's real
-  // spot gold quote (XAU/USD, see refreshMarketData.js/alphaVantage.js),
-  // so it gets a live-price check the same way OIL already does.
   let commodityTickerBySymbol = {};
   if (categories.some((c) => c.slug === "commodities")) {
     try {
@@ -582,9 +369,6 @@ export async function runScanAndGenerate() {
     }
   }
 
-  // Real converted index points (not SPY/QQQ's own ETF price) for the
-  // Indices price-plausibility check below - see getEquityTicker() and
-  // instruments.js's etfProxy conversion.
   let indexTickerBySymbol = {};
   if (categories.some((c) => c.slug === "indices")) {
     try {
@@ -601,22 +385,6 @@ export async function runScanAndGenerate() {
   const weekend = isWeekendUTC();
   const inPeakWindow = await isInsidePeakWindow();
 
-  // No hour-of-day/timezone pacing here on purpose - removed after a real
-  // freshness review (freshness-review-2026-09-20.md) found the pacing
-  // ceiling's reset clock (a Postgres session timezone, Europe/Berlin) and
-  // its own checkpoint clock (true UTC) disagreed by ~2 hours, causing
-  // every category to dump its whole daily cap in a ~60-second burst right
-  // after reset and then sit fully dark for the remaining ~23 hours -
-  // regardless of what was actually breaking. Publishing now runs purely
-  // on freshness + the plain daily cap below: a category publishes/
-  // schedules a story the moment it's grouped, fresh, and verification-
-  // clean - any hour, no artificial spacing - until that day's cap is
-  // used up, then it waits for the next real UTC day (see
-  // articlesCreatedToday()'s own UTC-explicit fix, articleUtils.js). Net
-  // effect, stated plainly rather than left as a surprise: a very newsy
-  // day can burn a whole day's cap in the first hour and go quiet for the
-  // rest of it. That's the deliberate tradeoff being made here - freshness
-  // wins over even distribution across the day - not an oversight.
   for (const category of categories) {
     const cap = weekend && WEEKEND_THROTTLED_CATEGORIES.has(category.slug)
       ? Number(await getSetting(`weekend_cap_${category.slug}`, DEFAULT_WEEKEND_CAPS[category.slug] ?? 1))
@@ -628,36 +396,18 @@ export async function runScanAndGenerate() {
       continue;
     }
 
-    // Code-chosen paragraph-2 explanatory framing (see newsParagraph2Templates.js) -
-    // seeded from the last 5 published articles in this category, then
-    // updated in-memory as this category's own loop below picks more, so
-    // two stories generated back-to-back in the SAME scan don't also
-    // repeat each other (an improvement over the DB-only exclusion window
-    // Analysis's equivalent uses, since Analysis only ever generates one
-    // article per asset per scan while a single News category scan can
-    // generate several).
     let usedParagraph2Ids = await getRecentlyUsedParagraph2TemplateIds(category.id);
 
     let items = await fetchSourceItemsForCategory(category.id);
 
     if (category.slug === "stocks") {
-      // The dual sources' items are already included above (they're tagged
-      // category_id = stocks). Drop anything that reads as an index story
-      // so it isn't covered in both categories.
       items = items.filter((i) => !(dualLinks.has(i.link) && looksLikeIndexStory(i)));
     } else if (category.slug === "indices") {
-      // Add the dual sources' index-flavored items on top of Indices' own
-      // dedicated sources.
       items = items.concat(dualItems.filter(looksLikeIndexStory));
     }
 
     totals.itemsScanned += items.length;
 
-    // Freshness gate: drop anything older than FRESHNESS_WINDOW_HOURS
-    // before it ever reaches grouping, so a stale item (a feed
-    // re-publishing an old post, a first-ever scan pulling a source's
-    // whole history) can never become a "new" article. Logged per category
-    // so it's visible whether this was actually filtering anything.
     const { fresh: recentItems, staleCount } = filterFreshItems(items);
     if (staleCount > 0) {
       console.log(
@@ -683,29 +433,9 @@ export async function runScanAndGenerate() {
 
       const previousCoverage = await findPreviousCoverage(category.id, group.map((i) => i.title));
 
-      // Code picks the paragraph-2 framing instead of leaving it to a
-      // generic "why it matters" instruction - see newsParagraph2Templates.js
-      // for why (a real manual read found paragraph 2 defaulting to a
-      // vague hedge template almost every time). Selected once per story
-      // and reused for the retry below if one fires, the same "the model
-      // is required to comply, not asked to choose again" reasoning
-      // runAnalysisScan() already applies to its own templates.
       const paragraph2Template = selectTemplate(PARAGRAPH2_DIRECTIVES, null, usedParagraph2Ids);
       usedParagraph2Ids = [...usedParagraph2Ids, paragraph2Template.id];
 
-      // Told to the model BEFORE generation, not just caught after -
-      // real regression this fixes: a headline-only Yahoo Finance item
-      // ("Nasdaq Futures Drop as Treasury Yields Rise") got a specific
-      // invented Nasdaq level (14,300) that was roughly HALF the real
-      // cached level (29,579.5) - findIndexPriceMismatch correctly caught
-      // it and routed the article to review, but that's the check working
-      // as a backstop, not a fix - a thin source tempts the model into
-      // fabricating a specific number every time, which is exactly why
-      // Stocks/Indices in particular (whose main feeds return no
-      // contentSnippet at all - see fetchSources.js) struggle to ever
-      // produce a clean, auto-publishable draft. Reusing
-      // groupHasNoSubstantiveContent (already computed for
-      // findStaleOrThinSource below) instead of a second detector.
       const isThinSource = groupHasNoSubstantiveContent(group);
 
       let draft;
@@ -725,20 +455,6 @@ export async function runScanAndGenerate() {
         continue;
       }
 
-      // Flagging only: the source's assigned category stays
-      // the default/primary signal and category_id is never auto-changed
-      // here. This just catches the exception case (e.g. a Treasury/bond
-      // story that only landed in Crypto because it came from a
-      // Crypto-assigned source) and routes it to a human instead of
-      // guessing a second time.
-      //
-      // Two independent signals, either one is enough to flag: (1) the
-      // model's own detected_category disagreeing with the source's
-      // assigned one, and (2) a deterministic keyword check finding zero
-      // category-relevant terms anywhere in the story - added because (1)
-      // alone missed real cases where the model's classification agreed
-      // with a wrong source-based default instead of judging the content
-      // independently (see contentLacksCategoryKeywords's comment).
       const modelDisagrees = Boolean(draft.detected_category) && draft.detected_category !== category.name;
       const keywordsMissing = contentLacksCategoryKeywords(category.name, draft.title, `${draft.dek} ${draft.body}`);
       const categoryMismatch = modelDisagrees || keywordsMissing;
@@ -752,10 +468,6 @@ export async function runScanAndGenerate() {
         totals.categoryMismatch += 1;
       }
 
-      // Price plausibility (Crypto only): a stated BTC/ETH price that's
-      // wildly off the live market price is a strong hallucination signal.
-      // Flagging only, same as category_mismatch - never auto-corrects the
-      // number, just routes to review.
       let priceMismatch = false;
       let priceMismatchNote = null;
       if (category.slug === "crypto") {
@@ -789,14 +501,6 @@ export async function runScanAndGenerate() {
         }
       }
 
-      // Generalizes the same guardrail principle to a stated price-MOVEMENT
-      // percentage ("rose 4.2%," "fell 12%") - checked the same way Gold's
-      // price is (source-text only; there's no live "today's % change for
-      // this exact claim" to diff against in general, since a percentage
-      // could describe anything). Runs for every category, on top of
-      // whatever asset-specific check just ran above, since a fabricated
-      // percentage is the same hallucination risk in Stocks/Indices copy
-      // as it is in Crypto/Commodities.
       if (!priceMismatch) {
         const percentMentions = extractPercentMentions(`${draft.title} ${draft.dek} ${draft.body}`);
         const sourceText = group.map((i) => `${i.title} ${i.contentSnippet || ""}`).join(" ");
@@ -809,11 +513,6 @@ export async function runScanAndGenerate() {
         }
       }
 
-      // Stale/thin source content: does the group backing this draft have
-      // any real material for the model to have drawn a specific claim
-      // from, and if so, is that material itself explicitly about a past
-      // period? See findStaleOrThinSource()'s comment above for the real
-      // incident (article 207) this exists to catch.
       const staleContentNote = findStaleOrThinSource(group);
       const staleContent = Boolean(staleContentNote);
       if (staleContent) {
@@ -867,27 +566,12 @@ export async function runScanAndGenerate() {
         group
       );
 
-      // null means another scan already claimed one of this group's
-      // source_urls between when this scan's alreadyStored() snapshot was
-      // taken and now - the exact race insertArticleWithSourcesOrDiscard
-      // exists to close. The whole attempt (article + all its sources)
-      // was rolled back atomically, so there's nothing left to clean up -
-      // just count it the same way any other discarded duplicate is
-      // counted and move on to the next group.
       if (articleId === null) {
         console.log(`AI engine: ${category.slug} - "${draft.title}" lost a race with another scan already covering this source - discarded.`);
         totals.skippedDuplicate += 1;
         continue;
       }
 
-      // The delayed-auto-publish window (see decideArticleStatus() above)
-      // is only a real chance to intervene if someone actually knows it's
-      // open - this is that notice. sendScheduledArticleAlert() already
-      // contains its own failures (bad/missing SMTP config, unreachable
-      // host, whatever) and never throws - see services/notifications/
-      // mailer.js - so this deliberately isn't wrapped in its own
-      // try/catch here; nothing about a scheduled article's DB state
-      // depends on whether this email actually goes out.
       if (status === "scheduled") {
         await sendScheduledArticleAlert({
           articleId,
@@ -909,14 +593,6 @@ export async function runScanAndGenerate() {
   return totals;
 }
 
-// Delayed auto-publish's other half: called on the same 15-minute cron
-// tick as runScanAndGenerate() (jobs/scheduler.js). Flips any "scheduled"
-// article whose auto_publish_at has passed to "published" - the WHERE
-// clause's "status = 'scheduled'" is the whole "hasn't been held/edited/
-// deleted since" guard, because routes/admin/articles.js clears
-// auto_publish_at and reverts status the moment a human touches a
-// scheduled article, and a deleted article simply no longer matches any
-// WHERE clause at all. One UPDATE ... RETURNING, no per-row loop needed.
 export async function publishDueScheduledArticles() {
   const { rows } = await query(
     `UPDATE articles

@@ -25,10 +25,6 @@ async function loadPollWithOptions(pollId) {
   };
 }
 
-// GET /api/polls/latest - the poll shown in the homepage sidebar. Admin
-// can turn the whole widget off (routes/admin/polls.js's poll-widget
-// setting) without archiving/deleting the underlying poll, and an
-// archived poll never shows here even while the widget is on.
 router.get("/latest", async (req, res) => {
   const { rows: settingRows } = await query("SELECT value FROM settings WHERE key = 'poll_widget_enabled'");
   if (settingRows.length > 0 && settingRows[0].value === "false") {

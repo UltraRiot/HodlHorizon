@@ -1,9 +1,5 @@
 import { formatMarketValue } from "../lib/formatMarketValue";
 
-// One column per asset class, in display order. tagVar points at the CSS
-// custom property (globals.css :root) used for that column's 2px accent
-// bar - --tag-forex is new (added alongside this component), the other
-// four already existed for the category chips.
 const COLUMNS = [
   { key: "indices", label: "Indices", tagVar: "--tag-index" },
   { key: "forex", label: "Forex", tagVar: "--tag-forex" },
@@ -12,12 +8,6 @@ const COLUMNS = [
   { key: "crypto", label: "Crypto", tagVar: "--tag-crypto" },
 ];
 
-// Full-width strip between <Ticker /> and the homepage's feed/sidebar grid
-// (see pages/index.js) - backed by GET /api/market/overview. Renders all 5
-// columns with up to 3 instruments each; the 3rd row is hidden by CSS
-// (globals.css) at mobile widths rather than fetched separately, so the
-// same markup serves both the desktop 5-column row and the mobile
-// horizontally-scrolling card strip.
 export default function MarketsOverview({ overview }) {
   if (!overview) return null;
   const hasAnyData = COLUMNS.some((col) => (overview[col.key] || []).length > 0);
@@ -32,12 +22,6 @@ export default function MarketsOverview({ overview }) {
         >
           Markets Overview
         </h2>
-        {/* Indices/forex/commodities/stocks refresh a few times a day
-            (Alpha Vantage's free tier is 25 requests/day - see
-            backend/src/services/marketData/overviewCache.js), not live -
-            this is what's honest about that instead of implying a
-            real-time feed. Crypto (CoinGecko) still refreshes every 60s
-            regardless. */}
         {overview.last_updated && (
           <span style={{ fontSize: 11, color: "var(--text-mute)" }}>
             Indices/Forex/Commodities/Stocks as of{" "}
@@ -59,11 +43,6 @@ function MarketColumn({ label, tagVar, items }) {
     <div className="markets-overview-col" style={{ "--col-accent": `var(${tagVar})` }}>
       <p className="markets-overview-col-label">{label}</p>
       {items.slice(0, 3).map((item) => (
-        // A stale fallback value (its own Alpha Vantage call failed this
-        // refresh, so it's the last time it actually succeeded - see
-        // fetchTickerClass() in backend/prices.js) still gets shown rather
-        // than disappearing; the tooltip is what's honest about how old it
-        // actually is.
         <div
           key={item.symbol}
           className="markets-overview-row"
@@ -76,12 +55,6 @@ function MarketColumn({ label, tagVar, items }) {
           <span className="markets-overview-symbol">{item.symbol}</span>
           <span className="markets-overview-price">{formatMarketValue(item.price, item.assetClass)}</span>
           {item.change_percent_24h == null ? (
-            // Forex used to always land here (fetchCurrencyRate() used an
-            // Alpha Vantage endpoint with no change% field at all) - fixed
-            // to compute a real one from FX_DAILY, so this branch is now
-            // just the general "no data yet" case every asset class already
-            // shares, not forex-specific - a muted dash instead of a
-            // fabricated delta.
             <span style={{ color: "var(--text-mute)" }}>—</span>
           ) : (
             <span className={item.change_percent_24h >= 0 ? "up" : "down"}>

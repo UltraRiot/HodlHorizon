@@ -1,6 +1,3 @@
-// Admin article management: list everything (any status), edit, publish,
-// unpublish, delete. This is what powers the "Latest AI-generated articles"
-// table in the admin dashboard.
 import { Router } from "express";
 import { query } from "../../db.js";
 
@@ -33,9 +30,6 @@ router.get("/", async (req, res) => {
 });
 
 router.get("/:id", async (req, res) => {
-  // Joined the same way the list endpoint (GET /) already is, so callers
-  // like the admin preview panel get category_name/category_slug without
-  // a second round trip.
   const { rows } = await query(
     `SELECT a.*, c.slug AS category_slug, c.name AS category_name
      FROM articles a
@@ -52,11 +46,6 @@ router.get("/:id", async (req, res) => {
   res.json({ ...rows[0], sources });
 });
 
-// PATCH /api/admin/articles/:id
-// Body can include any of: title, dek, body, status, seo_title, seo_description, category_id
-// A "hold" action from the admin UI is just this same endpoint with
-// { status: "review" } - see the scheduled-article handling below for what
-// that does when the article is currently "scheduled".
 router.patch("/:id", async (req, res) => {
   const allowed = ["title", "dek", "body", "status", "seo_title", "seo_description", "category_id"];
   const updates = [];
@@ -96,17 +85,6 @@ router.patch("/:id", async (req, res) => {
     updates.push("published_at = COALESCE(published_at, now())");
   }
 
-  // Trust/transparency signal (corrected_at, migrations/016): a real
-  // republish, not a first-time publish - this article already went live
-  // once (published_at already set) and is currently sitting somewhere
-  // other than "published" (review/scheduled/draft) flagged by the
-  // price/category-mismatch guardrails, and a human is now sending it
-  // back out. Deliberately does NOT fire on a plain first-time publish
-  // (published_at was null) or on a never-flagged article moving out of
-  // review for an unrelated reason (an editor's own hold, say) - only the
-  // specific "this was live, got pulled for a real caught issue, and is
-  // going live again" transition counts as a correction worth disclosing.
-  // Set once and never touched again after that (see the migration).
   if (
     req.body.status === "published" &&
     currentStatus !== "published" &&
@@ -116,29 +94,14 @@ router.patch("/:id", async (req, res) => {
     updates.push("corrected_at = COALESCE(corrected_at, now())");
   }
 
-  // dateModified in the NewsArticle JSON-LD (pages/article/[slug].js) reads
-  // this column - only bumped for a PUBLISHED article's content changing,
-  // since that's the only case a real visitor/Google could have already
-  // seen the old version. Editing something still in "review"/"draft"
-  // isn't a "modification" of anything that was ever live.
   if (currentStatus === "published" && contentFieldsTouched) {
     updates.push("updated_at = now()");
   }
 
-  // Delayed auto-publish (services/rss/scanAndGenerate.js): a "scheduled"
-  // article's timer only stays live untouched. A human editing its content,
-  // or explicitly moving it off "scheduled" (the "hold" action sends
-  // status: "review"), cancels it - the cron tick's own
-  // "WHERE status = 'scheduled'" check is what actually skips a held/edited
-  // article, so clearing auto_publish_at here is mostly for a clean read on
-  // the article itself, not a second source of truth for the tick.
   if (currentStatus === "scheduled") {
     if (statusExplicitlySet && req.body.status !== "scheduled") {
       updates.push("auto_publish_at = NULL");
     } else if (!statusExplicitlySet && contentFieldsTouched) {
-      // Implicit cancellation: content changed without an explicit status
-      // change - treat that the same as an explicit hold rather than
-      // silently leaving the timer running against edited content.
       params.push("review");
       updates.push(`status = $${params.length}`);
       updates.push("auto_publish_at = NULL");

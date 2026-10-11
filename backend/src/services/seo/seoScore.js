@@ -1,15 +1,5 @@
-// A deliberately simple SEO health check - no external tools, just counts
-// and length checks against published articles. Good enough to catch
-// obvious gaps (missing meta description, etc.) without adding a dependency
-// on a paid SEO API.
 import { query } from "../../db.js";
 
-// Per-item score matching the tightened SEO_FIELD_RULES prompt rules
-// (title 50-60 chars, description 120-155 chars) - not the looser range
-// computeSeoStatus() below still checks. Kept as a separate, additive
-// function so that one's existing (and differently-scoped) behavior stays
-// untouched; used by the evergreen refresh job and the admin SEO page to
-// score one glossary entry/static page/tested article at a time.
 export function scoreSeoFields(seoTitle, seoDescription) {
   const hasGoodTitle = Boolean(seoTitle && seoTitle.length >= 50 && seoTitle.length <= 60);
   const hasGoodDescription = Boolean(

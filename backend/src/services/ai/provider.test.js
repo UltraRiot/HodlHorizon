@@ -1,8 +1,3 @@
-// Regression tests for findBannedWordViolation - added after a real batch
-// audit found two banned words shipped despite STYLE_INSTRUCTIONS
-// explicitly forbidding them the whole time, because no code-level check
-// existed for that rule (every other STYLE_INSTRUCTIONS rule with a
-// documented real failure eventually got one).
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { findBannedWordViolation, findSourcePhrasingTooClose, findFormulaicParagraphTransition, findUnexplainedDekAcronym, findComparisonDirectionMismatch, findStaleForwardLookingDate, findGenericSignificanceFiller, findStaleRoleAssertion, findVagueCrossAssetClaim, stripGenericSignificanceFillerClauses } from "./provider.js";
@@ -29,12 +24,6 @@ test("findBannedWordViolation returns null for clean text with none of the banne
   assert.equal(findBannedWordViolation("Bitcoin rose 4% to $81,000 after a stronger-than-expected jobs report."), null);
 });
 
-// Regression tests for findSourcePhrasingTooClose - the originality/
-// plagiarism safeguard added after confirming (by sampling 18 real
-// published articles against their live source RSS feeds) that no
-// existing check compared a generated article's phrasing against its own
-// source, and that real close-paraphrasing genuinely happens. Every
-// source/generated pair below is real, copied verbatim from that sample.
 test("findSourcePhrasingTooClose catches a real close paraphrase (article 211, CoinDesk)", () => {
   const sourceText = 'CoinDesk: "Bitcoin Down 1.5% in September" - Bitcoin is down just 1.5% in its historically weakest month and remains on track for its first quarterly gain in a year, despite rising rates, surging oil and a stronger dollar.';
   const body = "Bitcoin is down 1.5% in September, historically its weakest month, but remains on track for its first quarterly gain in a year amid rising interest rates and a stronger dollar.\n\nSecond paragraph.\n\nThird paragraph.";
@@ -65,11 +54,6 @@ test("findSourcePhrasingTooClose returns null for a body with no sentences long 
   assert.equal(findSourcePhrasingTooClose("Hi.", "Bitcoin rose sharply today amid renewed institutional buying interest across major exchanges."), null);
 });
 
-// Regression tests for findFormulaicParagraphTransition - built after
-// measuring a real 25% (15/60) incidence of paragraph 2 opening with
-// "This [noun] highlights/indicates/suggests..." across the 60 most
-// recent News articles with a real paragraph 2. Every flagged example
-// below is a real paragraph 2, copied verbatim from that sample.
 test("findFormulaicParagraphTransition catches a real case (article 435, 'This scenario highlights')", () => {
   const body = "Paragraph one.\n\nThis scenario highlights the emotional and financial strain that family members can experience when dealing with money issues.\n\nParagraph three.";
   const note = findFormulaicParagraphTransition(body);
@@ -97,12 +81,6 @@ test("findFormulaicParagraphTransition does not flag a genuinely different parag
   assert.equal(findFormulaicParagraphTransition(body), null);
 });
 
-// Widened after a real regression: article #626 (Outcrop Silver) had this
-// exact pattern as the SECOND SENTENCE of paragraph 1 - "Outcrop Silver &
-// Gold Corp has reported that the inferred silver resource at its Santa
-// Ana project in Colombia has doubled to 35 million ounces. This increase
-// highlights the potential of the project..." - which the old
-// paragraph-2-only check never saw. The check now scans the whole body.
 test("findFormulaicParagraphTransition catches the real Outcrop Silver case in paragraph 1's second sentence (article 626)", () => {
   const body = "Outcrop Silver & Gold Corp has reported that the inferred silver resource at its Santa Ana project in Colombia has doubled to 35 million ounces. This increase highlights the potential of the project, which is located in the historic Mariquita silver district where mining has occurred since the 16th century.\n\nThe doubling of the inferred resource is a positive indicator for investors, suggesting enhanced prospects for future development and production in a region with a rich mining history.\n\nOutcrop plans to continue exploration efforts at Santa Ana, aiming to further expand the resource base and advance the project toward potential production stages.";
   const note = findFormulaicParagraphTransition(body);
@@ -119,10 +97,6 @@ test("findFormulaicParagraphTransition returns null for a short single-paragraph
   assert.equal(findFormulaicParagraphTransition("Just one paragraph, nothing else."), null);
 });
 
-// Regression tests for findUnexplainedDekAcronym - real article #232's dek
-// used "GIP" (BlackRock's Global Infrastructure Partners) without ever
-// expanding it in the dek itself, found during the manual tone/clarity
-// read. Dek copied verbatim from the real article.
 test("findUnexplainedDekAcronym flags the real unexpanded 'GIP' dek (article 232)", () => {
   const dek = "The partnership focuses on TotalEnergies' infrastructure assets in Africa, with a tariff structure for GIP.";
   const note = findUnexplainedDekAcronym(dek);
@@ -164,13 +138,6 @@ test("findUnexplainedDekAcronym returns null for an empty or missing dek", () =>
   assert.equal(findUnexplainedDekAcronym(undefined), null);
 });
 
-// Regression tests for findComparisonDirectionMismatch - the same
-// category as Analysis's direction-mismatch check, applied to News. Real
-// regression: article #660 (Zcash) claimed Bitcoin's 10-minute block time
-// was an example of cryptocurrencies that "already offer faster
-// transaction times" than Zcash's own new 25-second block time -
-// backwards, since 10 minutes (600 seconds) is 24x LONGER, not faster.
-// Body copied verbatim from the real published article.
 const REAL_ZCASH_BODY =
   "Zcash is set to reduce its block time from 75 seconds to 25 seconds with a new upgrade. This change will improve transaction efficiency and alter how the network funds its security after 2031.\n\nThis upgrade is crucial for Zcash as it seeks to maintain competitiveness against other cryptocurrencies that already offer faster transaction times, such as Bitcoin, which has a block time of 10 minutes.\n\nThe Zcash development team has not disclosed a specific date for the upgrade's implementation, but it is expected to be discussed in upcoming community meetings.";
 
@@ -205,13 +172,6 @@ test("findComparisonDirectionMismatch returns null for a body with no comparison
   assert.equal(findComparisonDirectionMismatch(REAL_ZCASH_BODY.replace(/faster/i, "different")), null);
 });
 
-// Regression tests for findStaleForwardLookingDate - real regression:
-// article #759 (Bastion Platforms), published 2026-09-19, stated "Bastion
-// aims to launch its services in early 2024" - the real source article
-// (fetched live from CoinTelegraph) never mentions 2024 at all, so this
-// was invented outright by the model, not copied from a stale source.
-// Body copied verbatim from the real published article; `now` is passed
-// explicitly so this test doesn't depend on which year it happens to run in.
 const REAL_BASTION_BODY =
   "Bastion Platforms National Trust Company has received conditional approval from the Office of the Comptroller of the Currency (OCC) to operate as a national trust bank.\n\nThe approval allows Bastion to offer services including custody for stablecoins, digital wallets, payment infrastructure, and white-label issuance, positioning the company to play a pivotal role in the evolving crypto banking sector.\n\nBastion aims to launch its services in early 2024, pending final regulatory requirements, as it seeks to capitalize on the growing demand for secure digital asset management solutions.";
 
@@ -241,12 +201,6 @@ test("findStaleForwardLookingDate returns null for a body with no year reference
   assert.equal(findStaleForwardLookingDate("The company plans to launch its services soon, pending regulatory approval.\n\nSecond paragraph.\n\nThird paragraph.", new Date("2026-09-19T00:00:00Z")), null);
 });
 
-// Regression tests for findGenericSignificanceFiller - promoted from a
-// prompt-only instruction to a code-level check after real measurement
-// showed the instruction only partially holds (18% before, 13.8% after -
-// see the function's own comment). Both real sentences below are copied
-// verbatim from real published articles that slipped through even after
-// the STYLE_INSTRUCTIONS ban was added.
 test("findGenericSignificanceFiller catches the real 'raises concerns about' filler (article 761)", () => {
   const body = "Paragraph one.\n\nThis incident raises concerns about the security of customer data in the crypto space, particularly for platforms like Revolut that handle large volumes of digital assets.\n\nParagraph three.";
   const note = findGenericSignificanceFiller(body);
@@ -275,12 +229,6 @@ test("findGenericSignificanceFiller returns null for a clean body with no filler
   assert.equal(findGenericSignificanceFiller("Bitcoin rose 4% to $81,000 after a stronger-than-expected jobs report.\n\nThe move followed a broader rally in risk assets.\n\nTrading volume on major exchanges rose 12% over the same period."), null);
 });
 
-// Real second example for findStaleForwardLookingDate, beyond Bastion:
-// article #184 ("Ethereum Confirms Glamsterdam Dates for September 2023"),
-// currently sitting in "review" status (not published) precisely because
-// this check already caught it - confirms the check works on a second
-// real case, not just the one that originally motivated it. Body copied
-// verbatim from the real article.
 test("findStaleForwardLookingDate catches the real Ethereum Glamsterdam stale-date claim (article 184, review status)", () => {
   const body = "Ethereum's Glamsterdam event will take place from September 19 to 21, 2023, amid concerns about unverified builders potentially stalling network operations. The network's client teams will face reduced review time before the Sepolia testnet launch, which could affect transaction processing.\n\nThis announcement is critical for traders as it highlights potential risks to Ethereum's network stability, which could impact transaction fees and processing times during the event.\n\nEthereum developers have cautioned that fake builders using free test ether may outbid legitimate participants, complicating the transaction process. They are implementing measures to address these challenges ahead of the event.";
   const note = findStaleForwardLookingDate(body, new Date("2026-09-18T00:00:00Z"));
@@ -288,13 +236,6 @@ test("findStaleForwardLookingDate catches the real Ethereum Glamsterdam stale-da
   assert.match(note, /2023/);
 });
 
-// Regression tests for findStaleRoleAssertion - real regression: article
-// #875 ("Bitcoin Faces Key Test on October 18 Amid New Tariffs") stated
-// "former President Trump prepares to implement new tariffs on Russia."
-// Confirmed live against the real source (CryptoSlate) that it never says
-// "former President" anywhere, only "President Donald Trump" - this was
-// inserted by the model from its own (wrong) general knowledge. Body/dek
-// text below is copied verbatim from the real published article.
 const REAL_TARIFF_ARTICLE_BODY =
   "Bitcoin is facing a critical test on October 18 as former President Trump prepares to implement new tariffs on Russia. The decision will influence energy markets and could have ripple effects on cryptocurrency valuations.\n\nTraders focused on Bitcoin and other cryptocurrencies may experience heightened volatility as they react to the tariff news and its implications for energy prices and market sentiment.\n\nThe specific rates and targets of the new tariffs have yet to be disclosed, and market analysts are closely monitoring how these developments will affect Bitcoin's performance in the coming weeks.";
 
@@ -321,12 +262,6 @@ test("findStaleRoleAssertion catches a stale Fed Chair title paired with an acti
   assert.match(note, /Warsh/);
 });
 
-// Regression tests for findVagueCrossAssetClaim - real regression: article
-// #875's own second sentence ("The decision will influence energy markets
-// and could have ripple effects on cryptocurrency valuations") asserts a
-// cross-asset "ripple effect" with no concrete mechanism, while the real
-// source article (CryptoSlate, fetched live) names several (energy
-// disruption -> inflation -> Fed policy -> yields/dollar strength).
 test("findVagueCrossAssetClaim catches the real vague 'ripple effects on cryptocurrency valuations' claim (article 875)", () => {
   const note = findVagueCrossAssetClaim(REAL_TARIFF_ARTICLE_BODY);
   assert.notEqual(note, null, "expected the mechanism-free ripple-effect claim to be caught");
@@ -347,13 +282,6 @@ test("findVagueCrossAssetClaim returns null for a clean body with no vague cross
   assert.equal(findVagueCrossAssetClaim("Bitcoin rose 4% to $81,000 after a stronger-than-expected jobs report.\n\nThe move followed a broader rally in risk assets.\n\nTrading volume on major exchanges rose 12% over the same period."), null);
 });
 
-// Regression tests for stripGenericSignificanceFillerClauses - the
-// mechanical post-retry fallback for findGenericSignificanceFiller. Built
-// around a real, stated risk: the check flags whole SENTENCES, and a
-// flagged sentence can carry a real fact alongside the filler construction
-// (article #775's own shape: "This update is crucial for enhancing user
-// experience, adding two new API endpoints" - stripping the whole sentence
-// would lose the API-endpoint fact too).
 test("stripGenericSignificanceFillerClauses strips only the filler clause, keeping a real fact in the same sentence", () => {
   const body = "Paragraph one.\n\nThis update is crucial for enhancing user experience, adding two new API endpoints.\n\nParagraph three.";
   const stripped = stripGenericSignificanceFillerClauses(body);

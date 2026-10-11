@@ -1,21 +1,3 @@
-// Recurring content-quality audit - re-runs every existing guardrail check
-// against the most recently published batch (the last RECENT_DAYS days,
-// across every category) and logs pass/fail counts per check into
-// content_audit_runs (migrations/020), so failure rates are visible as a
-// trend over time instead of only knowable at the moment someone asks.
-// Runs weekly (see jobs/scheduler.js) - separate from the interactive,
-// on-demand auditPublishedAnalysis.js (which walks the WHOLE Analysis
-// backlog per-instrument and is meant for a human to run and read
-// directly), though both share the same underlying check functions.
-//
-// "Most recently published batch" here means everything published in the
-// last RECENT_DAYS days, loaded once - the structural clause checks
-// (formulaic opening/closing) and the duplicate-in-category self-check
-// count matches WITHIN that one already-loaded batch rather than each
-// re-querying "the last N published" per article, which would be both
-// redundant (same window, refetched dozens of times) and subtly wrong for
-// a backlog-style audit (that phrasing means "as of right now," not "as
-// of when this particular historical article was published").
 import { query } from "../../db.js";
 import { findBannedWordViolation, findFormulaicParagraphTransition } from "../ai/provider.js";
 import { normalize, jaccardSimilarity, DUPLICATE_SIMILARITY_THRESHOLD } from "../rss/grouping.js";
@@ -32,37 +14,13 @@ import { reconstructSnapshotFromArticleText } from "../analysis/auditPublishedAn
 
 const RECENT_DAYS = 7;
 
-// A current failure rate is only worth flagging against a baseline built
-// from at least a few prior runs - one or two runs isn't a baseline, it's
-// noise. 1.5x plus a real (not just rounding-error) absolute gap avoids
-// flagging a jump from, say, 1/40 to 2/40 as a "spike."
 const MIN_PRIOR_RUNS_FOR_BASELINE = 3;
 const SPIKE_RATE_MULTIPLIER = 1.5;
 const SPIKE_MIN_ABSOLUTE_GAP = 0.05;
 
-// Review-queue backlog size, per category - a gauge, not a pass/fail
-// check, so it gets its own comparison logic rather than reusing
-// recordCheckResult's rate-vs-historical-average spike detector: a
-// backlog is a running accumulation, not a noisy per-batch rate, so
-// "did it grow since the last run" is the meaningful question, not "is it
-// above its own long-run average" (which would only fire well after a
-// backlog had already been accumulating for a while). Real motivation:
-// 31 Analysis review-status articles were found sitting untouched with
-// zero automated way to notice - see this project's own review-queue
-// cleanup that immediately preceded this feature. Both an absolute
-// (>= QUEUE_GROWTH_MIN_ABSOLUTE more articles) and a relative (>=50% more
-// than last run) jump are required, the same "real gap, not rounding
-// noise" reasoning as the rate-based spike check below - except when the
-// queue was previously empty, where ANY new backlog at all is worth
-// flagging (a 50% relative threshold against zero is meaningless).
 const QUEUE_GROWTH_RELATIVE_THRESHOLD = 1.5;
 const QUEUE_GROWTH_MIN_ABSOLUTE = 5;
 
-// Exported for direct testing against a real (but disposable, uniquely-
-// named) category_scope - the growth comparison genuinely needs the real
-// database (it reads back the previous run's row), the same reasoning
-// scanAndGenerate.test.js's concurrent-insert test already established
-// for this project's one other DB-dependent test.
 export async function recordReviewQueueSize(categoryScope, currentSize) {
   await query(
     `INSERT INTO content_audit_runs (check_name, category_scope, checked_count, failed_count, sample_findings)
@@ -137,7 +95,6 @@ export async function runContentQualityAudit() {
 
   const results = [];
 
-  // --- Banned words: every category, every article in the batch. ---
   {
     let failed = 0;
     const samples = [];
@@ -151,12 +108,6 @@ export async function runContentQualityAudit() {
     results.push(await recordCheckResult("banned_words", null, articles.length, failed, samples));
   }
 
-  // --- Formulaic paragraph-2 transition ("This X highlights/indicates/
-  // suggests...") - every category, same as banned_words above. Added
-  // after a real measurement (60 recent News articles, 15/60 = 25%) found
-  // this incidence worth a real check rather than just a prompt note - see
-  // findFormulaicParagraphTransition's own comment in provider.js for the
-  // real examples that motivated it. ---
   {
     let failed = 0;
     const samples = [];
@@ -170,15 +121,6 @@ export async function runContentQualityAudit() {
     results.push(await recordCheckResult("formulaic_transition", null, articles.length, failed, samples));
   }
 
-  // --- Category-mismatch keyword check, retroactively, per category. This
-  // is the SAME deterministic keyword gate scanAndGenerate.js already runs
-  // pre-publish (contentLacksCategoryKeywords, articleUtils.js) - auditing
-  // it here too catches drift from a live gap the pre-publish check let
-  // through (a keyword still missing from CATEGORY_KEYWORDS, the exact
-  // real gap that motivated articles #434/#440's fixes) rather than only
-  // ever finding it the next time a human manually pulls rejected drafts.
-  // Categories with no keyword list (Analysis) always score 0 failures -
-  // see contentLacksCategoryKeywords's own null-list short-circuit. ---
   {
     const byCategory = new Map();
     for (const a of articles) {
@@ -198,12 +140,6 @@ export async function runContentQualityAudit() {
     }
   }
 
-  // --- Duplicate-in-category (self-check within this batch): every pair
-  // of same-category articles compared once, same threshold as the live
-  // pre-publish gate (articleUtils.js's isDuplicateInCategory). Counts
-  // ARTICLES that matched at least one other, not pairs, so this is
-  // directly comparable to "N of M articles were a near-duplicate of
-  // something else in the batch." ---
   {
     const byCategory = new Map();
     for (const a of articles) {
@@ -228,22 +164,10 @@ export async function runContentQualityAudit() {
     }
   }
 
-  // --- Analysis-only checks: fact/qualifier/distance-direction (against a
-  // best-effort snapshot reconstructed from the article's own text, same
-  // as auditPublishedAnalysis.js - see its comment on why that's the only
-  // ground truth left for already-published content), the prior-article
-  // similarity check, and the two structural clause checks (counted
-  // within THIS batch, not a separate re-query - see file header). ---
   {
     const analysisArticles = articles.filter((a) => a.category_slug === "analysis");
     const checks = { fact_or_qualifier_mismatch: [], distance_or_direction_mismatch: [], similarity_to_prior: [], formulaic_opening: [], formulaic_closing: [] };
 
-    // Chronological per-symbol prior-article tracking for the similarity
-    // check, mirroring the live gate's own "compare against the last
-    // published article for this instrument" - built from this batch
-    // alone (a batch's very first article for a symbol has no in-batch
-    // prior and is skipped for this one check, same as a real first-ever
-    // piece would be).
     const lastBySymbol = new Map();
 
     for (const a of analysisArticles) {
@@ -272,10 +196,6 @@ export async function runContentQualityAudit() {
     }
   }
 
-  // --- Review-queue backlog size, per category. Deliberately NOT scoped
-  // to the RECENT_DAYS batch above - a stuck review article can be far
-  // older than 7 days (that's the whole problem), so this queries the
-  // real, current, total count regardless of when each one was created. ---
   {
     const { rows: queueRows } = await query(
       `SELECT c.slug, COUNT(*)::int AS n FROM articles a

@@ -1,6 +1,3 @@
-// Manage the RSS sources the news engine scans. This is the "Feeds" page.
-// Every source is assigned to exactly one category up front - the AI no
-// longer guesses category from keywords.
 import { Router } from "express";
 import { query } from "../../db.js";
 
@@ -28,8 +25,6 @@ router.post("/", async (req, res) => {
   res.status(201).json(rows[0]);
 });
 
-// PATCH /api/admin/feeds/:id
-// Body can include any of: active, category_id, name, rss_url, homepage_url
 router.patch("/:id", async (req, res) => {
   const allowed = ["active", "category_id", "name", "rss_url", "homepage_url"];
   const updates = [];

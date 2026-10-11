@@ -1,22 +1,3 @@
-// Regression test for the admin-login rate limiter (see auth.js's
-// loginLimiter) - pre-launch security review found POST /api/admin/login
-// had zero abuse protection, unlike the poll-vote/reaction routes which
-// already had perIpPerResourceLimiter. Runs the REAL router (not a copy of
-// the limiter in isolation) on a real Express app listening on a real
-// ephemeral loopback port, and makes real HTTP requests against it - the
-// closest a test in this project gets to actually "hitting /login" without
-// standing up the whole server.js.
-//
-// trust proxy is enabled only on this TEST app so X-Forwarded-For can
-// simulate two distinct client IPs over a single real loopback connection
-// (every real request in this test physically arrives from 127.0.0.1) -
-// see rateLimit.js's own comment on why server.js does NOT do this in
-// production without a real trusted proxy in front of it.
-//
-// A bogus, nonexistent email is used throughout - the route returns 401
-// after a single fast, real SELECT (no bcrypt.compare, since rows.length
-// is 0), so this exercises the real route without needing bcrypt work or
-// touching admin_users' actual data.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import express from "express";

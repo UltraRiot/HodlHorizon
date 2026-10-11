@@ -7,11 +7,6 @@ import { perIpLimiter } from "../../middleware/rateLimit.js";
 
 const router = Router();
 
-// Pre-launch security review: this route had zero abuse protection - unlike
-// the poll-vote/reaction routes (perIpPerResourceLimiter, middleware/
-// rateLimit.js), nothing stopped unlimited password-guessing attempts.
-// 10/15min is generous enough for a real admin who fat-fingers a password
-// a couple of times, tight enough to make brute-forcing impractical.
 const loginLimiter = perIpLimiter({
   windowMs: 15 * MINUTE,
   max: 10,

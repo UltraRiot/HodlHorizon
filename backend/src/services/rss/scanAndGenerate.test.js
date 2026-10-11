@@ -1,9 +1,3 @@
-// Permanent regression test for the stale/thin-source guardrail
-// (findStaleOrThinSource) - see its comment in scanAndGenerate.js for the
-// real incident (article 207, "Central Banks Increase Gold Reserves Amid
-// Geopolitical Tensions") that motivated it: a source with literally no
-// content beyond a headline let the model fill in a real-but-years-stale
-// statistic as if it were current news.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { findStaleOrThinSource, insertArticleWithSourcesOrDiscard } from "./scanAndGenerate.js";
@@ -40,17 +34,6 @@ test("findStaleOrThinSource does not flag a current story that merely references
   assert.equal(findStaleOrThinSource(group), null, "a single incidental past-year mention in the body, with a current headline, should not be enough on its own to flag");
 });
 
-// Real regression: articles 273/274, 275/276, 277/278, 279/280 (cleaned up
-// in migrations/019) were each the IDENTICAL source_url, created 5-8
-// seconds apart - two manual scan invocations close enough together that
-// the second one's alreadyStored() check ran before the first one's
-// article_sources insert for that URL had landed. A mocked query function
-// can't prove a database-level race fix actually closes the gap - this
-// runs two REAL overlapping transactions against the real pool (needs
-// DATABASE_URL configured, same as every other part of this app) and
-// confirms the UNIQUE constraint + transactional rollback (migrations/019,
-// insertArticleWithSourcesOrDiscard in scanAndGenerate.js) actually holds
-// under genuine concurrency, not just in a single-threaded read of the code.
 test("insertArticleWithSourcesOrDiscard: two concurrent inserts of the same source_url produce exactly one article", async () => {
   const { rows: catRows } = await query("SELECT id FROM categories LIMIT 1");
   const categoryId = catRows[0].id;

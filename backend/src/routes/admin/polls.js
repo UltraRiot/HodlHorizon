@@ -1,21 +1,8 @@
-// Full admin management for polls: create (with 2-6 options), archive/
-// restore instead of only ever hard-deleting, delete outright, and a
-// site-wide on/off switch for the homepage widget (routes/polls.js's
-// GET /latest reads both the switch and each poll's status).
-//
-// Mounted at the bare "/api/admin" prefix (see server.js), not its own
-// "/api/admin/polls" prefix like feeds.js/glossary.js - this file needs
-// two different prefixes (/api/admin/polls/... AND
-// /api/admin/settings/poll-widget), so every route below spells out its
-// own full path from "/api/admin" rather than assuming one shared base.
 import { Router } from "express";
 import pool, { query } from "../../db.js";
 
 const router = Router();
 
-// GET /api/admin/polls - every poll, both statuses, newest first, with
-// options/votes/percentages. Batches the options lookup in one query
-// (grouped in memory) instead of one query per poll.
 router.get("/polls", async (req, res) => {
   const { rows: polls } = await query(
     "SELECT id, question, status, created_at FROM polls ORDER BY created_at DESC"
@@ -46,10 +33,6 @@ router.get("/polls", async (req, res) => {
   );
 });
 
-// POST /api/admin/polls   { question, options: string[] } (2-6 options)
-// Inserts the poll then its options in one transaction - a failure
-// partway through (e.g. a bad option row) rolls back the poll insert too,
-// so a poll can never end up saved with zero or partial options.
 router.post("/polls", async (req, res) => {
   const { question, options } = req.body;
 
@@ -93,9 +76,6 @@ router.post("/polls", async (req, res) => {
   }
 });
 
-// PATCH /api/admin/polls/:id/archive - takes it off the homepage widget
-// (routes/polls.js filters WHERE status = 'active') without losing its
-// vote history, unlike DELETE below.
 router.patch("/polls/:id/archive", async (req, res) => {
   const { rows } = await query(
     "UPDATE polls SET status = 'archived' WHERE id = $1 RETURNING id, question, status, created_at",
@@ -105,9 +85,6 @@ router.patch("/polls/:id/archive", async (req, res) => {
   res.json(rows[0]);
 });
 
-// PATCH /api/admin/polls/:id/restore - makes an archived poll eligible to
-// show on the homepage widget again (still subject to being the most
-// recent active poll, and the widget being enabled at all).
 router.patch("/polls/:id/restore", async (req, res) => {
   const { rows } = await query(
     "UPDATE polls SET status = 'active' WHERE id = $1 RETURNING id, question, status, created_at",
@@ -117,16 +94,11 @@ router.patch("/polls/:id/restore", async (req, res) => {
   res.json(rows[0]);
 });
 
-// DELETE /api/admin/polls/:id - hard delete; poll_options cascades via its
-// existing FK (migrations/001_init.sql). Unlike archive, this loses vote
-// history permanently - the frontend confirms before calling this.
 router.delete("/polls/:id", async (req, res) => {
   await query("DELETE FROM polls WHERE id = $1", [req.params.id]);
   res.status(204).end();
 });
 
-// GET/PATCH /api/admin/settings/poll-widget - reuses the settings table,
-// same on/off-switch pattern as auto_publish (routes/admin/aiEngine.js).
 router.get("/settings/poll-widget", async (req, res) => {
   const { rows } = await query("SELECT value FROM settings WHERE key = 'poll_widget_enabled'");
   const enabled = rows.length === 0 || rows[0].value === "true";

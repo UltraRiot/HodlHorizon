@@ -1,7 +1,3 @@
-// Regression tests for News paragraph-2 template rotation - same rotation
-// guarantee already proven for Analysis's opening/closing templates
-// (analysisTemplates.test.js): not just "produces some variety," but
-// provably never repeats a directive within its own exclusion window.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { PARAGRAPH2_DIRECTIVES } from "./newsParagraph2Templates.js";
@@ -39,14 +35,6 @@ test("selectTemplate falls back to the full pool (never throws) when every direc
   assert.ok(allIds.includes(chosen.id));
 });
 
-// Regression tests for ANTI_HEDGE_PREFIX - added after a real fresh batch
-// (30 articles, all 4 News categories) found the model evading
-// findFormulaicParagraphTransition's specific verb list with synonymous
-// vague-hedge phrasing inside each directive's own thin-source fallback
-// clause - real examples: article #490 "This situation IS CRITICAL for
-// traders," article #471 "This underperformance MAY SIGNAL investor
-// concerns." Every directive must ban these specific discovered phrases,
-// not just the original 7-verb regex list.
 test("every directive bans the real vague-hedge phrasings found in the post-fix verification batch", () => {
   for (const d of PARAGRAPH2_DIRECTIVES) {
     assert.match(d.instruction, /may signal/i, `${d.label} must ban "may signal" (real article #471)`);

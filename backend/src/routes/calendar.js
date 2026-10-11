@@ -4,26 +4,8 @@ import { maybeSyncCalendarIfStale } from "../services/calendar/syncForexFactory.
 
 const router = Router();
 
-// Shared field list for both endpoints below, so it's defined once
-// instead of twice - the join/select structure is otherwise identical,
-// only the WHERE clause differs between "today" and "upcoming".
 const EVENT_FIELDS = "id, title, event_time, impact, category, region, forecast, previous";
 
-// De-duplicates by (title, region, calendar day) before returning, keeping
-// the highest-id (most recently synced) row of each group. Found live:
-// ForexFactory itself nudges an event's reported time by a few minutes
-// between daily fetches (a provisional time getting refined), and the
-// sync job's (title, event_time) unique index doesn't catch that - it
-// only matches an exact-to-the-minute repeat - so the same real event
-// (e.g. "BOJ Policy Rate") could end up as two rows a few minutes apart.
-// services/calendar/syncForexFactory.js was fixed to stop this from
-// happening on new syncs, but rows already sitting in the table from
-// before that fix needed a query-time fix too, done here rather than a
-// one-off DELETE so it's non-destructive (no history lost) and
-// self-healing against any future edge case, not just the ones already
-// found. Two genuinely different occurrences of a recurring title (weeks
-// apart, or the same day in two different regions) are untouched, since
-// both region and day are part of the group key.
 async function selectEvents(whereClause, params) {
   const { rows } = await query(
     `SELECT ${EVENT_FIELDS} FROM (
@@ -38,29 +20,10 @@ async function selectEvents(whereClause, params) {
   return rows;
 }
 
-// "Today"/"this week" boundaries, computed in UTC - explicitly, not left
-// ambiguous. Chosen deliberately: this Postgres connection's ambient
-// session timezone turned out to be Europe/Berlin (an accidental
-// deployment artifact of wherever this DB happens to be hosted, not a
-// considered choice), and event_time is stored as TIMESTAMPTZ - an
-// absolute instant with no timezone of its own - so "today" has to pick
-// SOME zone to draw its boundaries in. UTC is used because (a) it's the
-// same zone the rest of this codebase already uses for day-boundary
-// logic (see isWeekendUTC() in services/shared/articleUtils.js and the
-// daily-cap reset it feeds), and (b) computing it here in JS with
-// Date.UTC(...) - rather than relying on Postgres's now()/date_trunc(),
-// which silently follows the session's ambient timezone - means this
-// never depends on that Europe/Berlin default even if it changes.
 function utcDayStart(date) {
   return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
 }
 
-// Monday-Sunday week. JS's getUTCDay() is 0=Sunday..6=Saturday;
-// converting to 0=Monday..6=Sunday makes "days until next Monday" a plain
-// subtraction. When today IS Sunday, this correctly resolves to 1 (next
-// Monday is tomorrow), so "the rest of this week" is empty - Sunday has
-// no days left in a Monday-Sunday week, which is the right answer, not a
-// special case to code around.
 function calendarWindows(now = new Date()) {
   const todayStart = utcDayStart(now);
   const tomorrowStart = new Date(todayStart.getTime() + 24 * 60 * 60 * 1000);
@@ -70,13 +33,6 @@ function calendarWindows(now = new Date()) {
   return { todayStart, tomorrowStart, nextMondayStart };
 }
 
-// GET /api/calendar/today - every impact level, strictly today (UTC),
-// time ascending. Never blocks on the ForexFactory feed - always serves
-// whatever's currently in the DB immediately, and separately (fire and
-// forget, not awaited) asks the calendar to sync itself in the
-// background if it's gone stale. Same "check staleness at request time,
-// not a boot-time timer" pattern as the Markets Overview fix
-// (services/marketData/overviewCache.js).
 router.get("/today", async (req, res) => {
   maybeSyncCalendarIfStale();
   const { todayStart, tomorrowStart } = calendarWindows();
@@ -84,10 +40,6 @@ router.get("/today", async (req, res) => {
   res.json(rows);
 });
 
-// GET /api/calendar/upcoming - high-impact only, strictly AFTER today
-// through the end of this week (Sunday, UTC), time ascending. The lower
-// bound (tomorrowStart) is exactly /today's upper bound, so the same
-// event can never appear in both responses.
 router.get("/upcoming", async (req, res) => {
   maybeSyncCalendarIfStale();
   const { tomorrowStart, nextMondayStart } = calendarWindows();

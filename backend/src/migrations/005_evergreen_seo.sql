@@ -1,16 +1,5 @@
--- Powers the evergreen SEO refresh job (services/seo/evergreenRefresh.js).
--- Scope is glossary_terms + a handful of static pages - never published
--- news/Analysis articles, which are timestamped and shouldn't have their
--- metadata silently changed after the fact.
-
 ALTER TABLE glossary_terms ADD COLUMN IF NOT EXISTS seo_last_reviewed_at TIMESTAMPTZ;
 
--- Static pages have no other DB row at all (they're hardcoded Next.js
--- pages) - this table is their only source of truth for seo_title/
--- seo_description, plus a plain-text body_text snapshot used purely as
--- input for the AI when refreshing those two fields. body_text is never
--- rendered anywhere; the actual page prose lives in the frontend page file
--- and this job never touches it.
 CREATE TABLE IF NOT EXISTS page_seo (
   path TEXT PRIMARY KEY,
   seo_title TEXT,

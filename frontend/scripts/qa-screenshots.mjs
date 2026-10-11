@@ -1,30 +1,3 @@
-// Visual QA screenshot tool - a reusable check, not a one-off. Boots (or
-// reuses) the Next.js server, visits every real page type in both light
-// and dark theme at both desktop and mobile viewport widths, and saves a
-// full-page screenshot of each to qa-screenshots/ (gitignored - these are
-// a local visual-diff aid, not committed artifacts). Also captures and
-// reports any browser console errors/exceptions per page.
-//
-// Forces the theme deterministically by seeding localStorage with the same
-// key pages/_document.js's flash-prevention script and lib/theme.js read
-// from ("hodlhorizon-theme") before navigating - this exercises the real
-// persistence path a visitor's browser would use, not a synthetic
-// override, so a screenshot mismatch here means the actual toggle
-// mechanism is broken, not just a test artifact.
-//
-// Usage:
-//   node scripts/qa-screenshots.mjs
-//   BASE_URL=http://localhost:3000 node scripts/qa-screenshots.mjs   (reuse an already-running server)
-//   ADMIN_EMAIL=... ADMIN_PASSWORD=... node scripts/qa-screenshots.mjs   (also screenshot an authenticated admin page)
-//
-// Requires the backend API reachable at NEXT_PUBLIC_API_URL (default
-// http://localhost:4000) for the homepage/category/article pages to render
-// real content - start it with MARKET_DATA_DRY_RUN=true so this never
-// spends real provider quota. Admin login screenshot needs no extra
-// backend config beyond an existing admin account (same ADMIN_EMAIL/
-// ADMIN_PASSWORD backend/.env already uses) - deliberately read from env
-// rather than hardcoded, since even a weak placeholder credential
-// shouldn't live as a literal string in a file that stays in the repo.
 import { chromium } from "@playwright/test";
 import { spawn } from "node:child_process";
 import { mkdir } from "node:fs/promises";
@@ -34,9 +7,6 @@ import path from "node:path";
 
 const BASE_URL = process.env.BASE_URL || "http://localhost:3000";
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
-// fileURLToPath (not a manual .pathname regex) correctly decodes
-// percent-encoded characters (a space in this project's own folder name
-// becomes %20 in a file:// URL) and normalizes Windows drive-letter paths.
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const OUT_DIR = path.join(SCRIPT_DIR, "..", "qa-screenshots") + path.sep;
 const THEME_STORAGE_KEY = "hodlhorizon-theme";
@@ -44,7 +14,7 @@ const ADMIN_TOKEN_KEY = "hodlhorizon_admin_token";
 
 const VIEWPORTS = {
   desktop: { width: 1440, height: 900 },
-  mobile: { width: 390, height: 844 }, // iPhone 12/13-class width - the common mobile breakpoint this site's own CSS targets (768px/480px breakpoints, see globals.css)
+  mobile: { width: 390, height: 844 },
 };
 
 async function isServerUp(url) {
@@ -65,9 +35,6 @@ async function waitForServer(url, timeoutMs = 60000) {
   return false;
 }
 
-// Fetches one real article slug and one real glossary slug so those page
-// screenshots show real content instead of a 404 - falls back to null
-// (skipped, logged) if the backend isn't reachable or has none yet.
 async function findRealSlug(apiPath) {
   try {
     const res = await fetch(`${API_URL}${apiPath}`, { signal: AbortSignal.timeout(5000) });
@@ -78,10 +45,6 @@ async function findRealSlug(apiPath) {
   }
 }
 
-// Logs in via the real API (not by scripting the login form) to get a real
-// JWT the same way the app itself would produce one - returns null (admin
-// screenshot skipped, logged) if ADMIN_EMAIL/ADMIN_PASSWORD aren't set or
-// login fails, rather than guessing a credential.
 async function getAdminToken() {
   const email = process.env.ADMIN_EMAIL;
   const password = process.env.ADMIN_PASSWORD;
@@ -103,9 +66,6 @@ async function getAdminToken() {
 
 async function screenshotPage(browser, { name, path: urlPath, theme, viewportName, adminToken }) {
   const context = await browser.newContext({ viewport: VIEWPORTS[viewportName] });
-  // Seeds localStorage BEFORE any page script runs, on the actual origin -
-  // needs one throwaway navigation first since localStorage is
-  // origin-scoped and can't be set before the first request to that origin.
   await context.addInitScript(
     ({ themeKey, themeValue, adminKey, adminValue }) => {
       localStorage.setItem(themeKey, themeValue);

@@ -1,20 +1,9 @@
-// The default AI "provider". Needs no API key, costs nothing, and produces
-// clearly-labelled placeholder content - enough to see the whole pipeline
-// (RSS -> grouping -> article -> database -> homepage) actually working
-// before you spend any OpenAI/Anthropic credit. Swap AI_PROVIDER in .env
-// to "openai" or "anthropic" when you're ready for real writing.
-
 import { formatMarketValue } from "../marketData/formatMarketValue.js";
 
 function shortDek(items) {
   return `${items.length} source${items.length > 1 ? "s" : ""} are reporting on this story. Add a real AI provider in .env to generate an actual summary here.`;
 }
 
-// assignedCategoryName: the source's own assigned category (e.g. "Crypto"),
-// passed through only so mock output never trips the category-mismatch
-// check - mock has no real content understanding to independently detect
-// a category with, unlike the real providers, so it just echoes back
-// whatever it was told rather than guessing wrong.
 export function mockGenerateArticle(items, previousCoverage, correctionNote, assignedCategoryName) {
   const headline = items[0].title;
   const updateNote = previousCoverage
@@ -59,10 +48,6 @@ export function mockGenerateAnalysis(snapshot) {
   };
 }
 
-// Always passes - mock has no real content understanding to judge
-// redundancy with, and this check only runs for real providers anyway
-// (see provider.js's generateArticle: skipped entirely when
-// draft.provider === "mock").
 export function mockCheckRedundancy() {
   return {
     adds_new_information: true,
@@ -78,9 +63,6 @@ export function mockCheckRedundancy() {
   };
 }
 
-// Always passes, same reasoning as mockCheckRedundancy above - mock has no
-// real content understanding, and this check only ever runs for real
-// providers anyway (see provider.js).
 export function mockCheckAnalysisFreshness() {
   return {
     restates_stale_fact: false,

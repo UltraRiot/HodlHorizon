@@ -12,8 +12,6 @@ import UpcomingCalendarWidget from "../components/UpcomingCalendarWidget";
 import { apiGet } from "../lib/api";
 import { CATEGORIES } from "../lib/categories";
 
-// Safe wrapper: if one backend call fails (e.g. a market data provider is
-// down), the rest of the homepage still renders instead of a 500 page.
 async function safe(promise, fallback) {
   try {
     return await promise;
@@ -23,13 +21,6 @@ async function safe(promise, fallback) {
   }
 }
 
-// ISR, not SSR: nothing on this page is per-visitor (no cookies, no query
-// params feeding the fetch), so every visitor can share one build served
-// straight from cache, rebuilt in the background at most once every 60s -
-// frequent enough that a newly-published article or a market-data refresh
-// (hourly/8-hourly/daily - see backend/src/services/marketData) shows up
-// within a minute, without paying a full server render on every request
-// the way getServerSideProps did.
 export async function getStaticProps() {
   const [articles, ticker, poll, overview, calendarToday, calendarUpcoming, mostRead] = await Promise.all([
     safe(apiGet("/api/articles?category=all&limit=20"), []),

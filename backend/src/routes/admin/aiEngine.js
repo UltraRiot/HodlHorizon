@@ -1,5 +1,3 @@
-// The "AI Engine" page: toggle auto-publish, change the scan interval, and
-// trigger an immediate scan.
 import { Router } from "express";
 import { query } from "../../db.js";
 import { runScanAndGenerate } from "../../services/rss/scanAndGenerate.js";
@@ -27,8 +25,6 @@ router.get("/settings", async (req, res) => {
   });
 });
 
-// PATCH body can include any of: auto_publish, scan_interval_minutes,
-// daily_caps: { crypto, stocks, indices, commodities, analysis } (partial ok)
 router.patch("/settings", async (req, res) => {
   const { auto_publish, scan_interval_minutes, daily_caps } = req.body;
 
@@ -57,8 +53,6 @@ router.patch("/settings", async (req, res) => {
   res.json({ ok: true });
 });
 
-// POST /api/admin/ai-engine/scan-now - run the news pipeline immediately
-// instead of waiting for the next scheduled tick. Useful for testing.
 router.post("/scan-now", async (req, res) => {
   try {
     const result = await runScanAndGenerate();
@@ -68,7 +62,6 @@ router.post("/scan-now", async (req, res) => {
   }
 });
 
-// POST /api/admin/ai-engine/analysis-now - run the Analysis job immediately.
 router.post("/analysis-now", async (req, res) => {
   try {
     const result = await runAnalysisScan();

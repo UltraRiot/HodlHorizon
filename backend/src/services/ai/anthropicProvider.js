@@ -1,23 +1,11 @@
-// Talks to Anthropic's Messages API directly over fetch. Requires
-// ANTHROPIC_API_KEY in backend/.env.
 import { buildArticlePrompt, buildGlossaryPrompt, buildAnalysisPrompt, buildSeoRefreshPrompt, buildRedundancyCheckPrompt, buildAnalysisFreshnessCheckPrompt } from "./prompts.js";
 import { ARTICLE_FIELDS, NEWS_ARTICLE_FIELDS, GLOSSARY_FIELDS, SEO_REFRESH_FIELDS, REDUNDANCY_CHECK_FIELDS, ANALYSIS_FRESHNESS_CHECK_FIELDS } from "./schemas.js";
 
-// Rough, approximate pricing (Claude Haiku-class model) for the cost tracker.
 const PRICE_PER_1K_INPUT_TOKENS = 0.0008;
 const PRICE_PER_1K_OUTPUT_TOKENS = 0.004;
 
-// Same idea as rss-parser's timeout on fetchSources.js's Parser instance -
-// without this, a stalled request just hangs the fetch() promise forever.
-// scanAndGenerate.js/runAnalysis.js catch the resulting abort error
-// per-story so one timeout doesn't take the whole scan down.
 const FETCH_TIMEOUT_MS = 30000;
 
-// Forced tool-use is Anthropic's equivalent of OpenAI's Structured Outputs
-// here: tool_choice pins the model to this one tool, and its input_schema
-// (the same field shapes from schemas.js) makes the required keys part of
-// the tool's contract rather than something the prompt just asks nicely
-// for - no more free-text JSON that can quietly drop a field under load.
 function toTool(name, fields) {
   return {
     name,

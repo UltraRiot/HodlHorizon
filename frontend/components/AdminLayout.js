@@ -14,9 +14,6 @@ const NAV = [
   { href: "/admin/polls", label: "Polls" },
 ];
 
-// Wraps every admin page: checks you're logged in (client-side only - the
-// real protection is the backend's JWT check on every API call) and renders
-// the sidebar from the approved design.
 export default function AdminLayout({ title, children }) {
   const router = useRouter();
   const [checked, setChecked] = useState(false);
@@ -50,10 +47,6 @@ export default function AdminLayout({ title, children }) {
           {menuOpen ? "✕" : "☰"}
         </button>
 
-        {/* Grouped so the mobile dropdown (position:absolute, hidden unless
-            "open") can hide/show label+nav+logout together as one unit -
-            flex:1 here keeps the logout button's marginTop:"auto" pinning
-            to the bottom of the sidebar on desktop, exactly as before. */}
         <div className={`admin-nav-group${menuOpen ? " open" : ""}`}>
           <div style={{ fontSize: 11, letterSpacing: 1, textTransform: "uppercase", color: "var(--text-mute)", padding: "0 24px", marginBottom: 8 }}>
             Admin

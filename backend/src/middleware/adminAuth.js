@@ -1,5 +1,3 @@
-// Protects admin routes. The admin panel sends the JWT it got from
-// POST /api/admin/login as "Authorization: Bearer <token>".
 import jwt from "jsonwebtoken";
 
 export function requireAdmin(req, res, next) {

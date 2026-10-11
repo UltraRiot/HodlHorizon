@@ -1,27 +1,6 @@
-// The shared voice guide for every AI-written piece of content. Keeping it
-// in one file means changing the site's tone means editing one paragraph,
-// not hunting through every provider file.
-//
-// This version is deliberately strict: hard
-// word/paragraph limits, a banned-word list, and no em dashes. Loose
-// adjectives like "professional but human" don't reliably change model
-// output - hard rules and the few-shot examples at the bottom of
-// buildArticlePrompt do.
 import { instrumentReferenceText } from "../marketData/instruments.js";
 import { formatMarketValue } from "../marketData/formatMarketValue.js";
 
-// Single source of truth for the banned-phrase list, shared between the
-// prompt text below and findBannedWordViolation() (provider.js) - the
-// prompt instruction alone was never actually backed by a code check
-// (unlike every other STYLE_INSTRUCTIONS rule with a real regression:
-// numbers, causal claims, attribution, the ETF-price rule all eventually
-// got one), which is exactly how "Market participants will be closely
-// monitoring the Fed's stance..." (real article 332) and "This divergence
-// in focus underscores Bitcoin's unique position..." (real article 338)
-// shipped despite this rule existing in the prompt the whole time. Kept
-// as one array (not two independently-maintained lists) so adding a
-// phrase here automatically updates both what the model is told and what
-// gets verified.
 export const BANNED_PHRASES = [
   "notable", "significant development", "market participants", "in the world of",
   "as of this writing", "it remains to be seen", "moving forward", "stay tuned",
@@ -51,10 +30,6 @@ ${instrumentReferenceText()}
 - Do not mention or describe images. This site never uses images in articles.
 - Do not restate why a fact matters in generic terms without adding a concrete detail - measured across a real 100-article sample, 18% of published pieces had a sentence like this, e.g. "This surge in AI investment is particularly relevant for technology companies" or "The doubling of the inferred resource is a positive indicator for investors, suggesting enhanced prospects for future development." These sentences add zero information a reader couldn't already infer from the fact itself. Banned constructions: "is particularly relevant for," "is crucial for," "is significant for," "is a positive/negative indicator," "raises questions about," "underscores the importance of," "reflects broader/growing [trend/concerns/interest]." When you want to convey why a fact matters, name the SPECIFIC mechanism instead - a concrete next step, a named consequence, a number that changes as a result - or drop the sentence entirely rather than restate the obvious.`;
 
-// Shared by every prompt that asks for seo_title/seo_description
-// (buildArticlePrompt, buildAnalysisPrompt, buildGlossaryPrompt, and the
-// evergreen refresh prompt below) so the two fields get the same treatment
-// everywhere instead of drifting per prompt.
 const SEO_FIELD_RULES = `SEO FIELD RULES:
 - seo_title: 50-60 characters, with the key fact, entity, or number near the front - specific, not generic (e.g. "Bitcoin ETF Inflows Hit $2.1B in October," not "Today's Crypto News").
 - seo_description: 120-155 characters, one complete sentence restating the core fact plus one reason it matters - never cut off mid-thought.
@@ -76,36 +51,6 @@ The delay pushes expected revenue from that chip out of the current quarter, and
 
 The company said it is still working with regulators and expects shipments to resume before year end, without naming a specific date.`;
 
-// correctionNote (optional): set by provider.js when a first attempt at
-// this exact story failed a post-generation check (too many paragraphs, or
-// paragraph 1/2 too similar) - see findBodyProblem() there. Retried once
-// with this note, then accepted as-is either way.
-// paragraph2Directive (optional): the code-chosen explanatory framing for
-// paragraph 2 (services/ai/newsParagraph2Templates.js) - replaces the
-// generic "why it matters to a trader or investor" instruction above with
-// a forced, specific shape, the same "give it fixed variety and let code
-// choose" mechanism already proven for Analysis's opening/closing
-// templates. Optional so a caller (or a test) that omits it still gets a
-// valid prompt using the generic HARD RULE alone - runScanAndGenerate()
-// always sets it in practice.
-// isThinSource (optional): true when none of the sources below supply
-// real content beyond a headline (scanAndGenerate.js's
-// groupHasNoSubstantiveContent). Real regression this fixes: a headline-
-// only item ("Nasdaq Futures Drop as Treasury Yields Rise") produced a
-// specific invented Nasdaq level roughly HALF the real current one -
-// findIndexPriceMismatch caught it after the fact and correctly routed it
-// to review, but a thin source tempting the model to fabricate a number
-// in the first place - not the after-the-fact catch - is the actual
-// problem, and exactly why Stocks/Indices (whose main feeds return no
-// contentSnippet at all - see fetchSources.js) rarely produce a clean,
-// auto-publishable draft. STYLE_INSTRUCTIONS' general "never invent a
-// number" rule already exists but evidently doesn't reliably hold on its
-// own here, the same lesson this file's own opening comment already
-// states about loose instructions generally - repeating the specific
-// constraint at the point the risk is highest (immediately before the
-// output format, where models weight recent context more heavily,
-// already proven for buildAnalysisPrompt's word-floor fix) is the
-// stronger version of the same rule, not a new one.
 export function buildArticlePrompt(items, previousCoverage, correctionNote, paragraph2Directive, isThinSource) {
   const sourcesText = items
     .map((i, idx) => `Source ${idx + 1} (${i.sourceName}): "${i.title}"${i.contentSnippet ? ` - ${i.contentSnippet}` : ""}`)
@@ -125,20 +70,6 @@ export function buildArticlePrompt(items, previousCoverage, correctionNote, para
     ? `\nTHIN SOURCE WARNING: none of the source(s) above supply anything beyond a headline - no number, level, percentage, or date is given. Do NOT invent one to fill this gap, even a number you believe you already know to be real (it may be outdated or simply wrong for this specific story). Write the piece using only the qualitative fact the headline itself states (what happened, direction, named parties) with zero specific figures you were not given. If you cannot write 3 genuinely informative paragraphs this way, write fewer - do not pad with a fabricated number just to reach length.\n`
     : "";
 
-  // Cross-asset impact: a real gap found in the manual tone/clarity read -
-  // stories that plainly affect a SPECIFIC named instrument beyond the
-  // primary subject (a Fed decision moving Treasury-sensitive stocks, an
-  // OPEC move affecting a named airline's fuel costs, a BOJ hike moving a
-  // named forex pair) were routinely reported with only the primary
-  // subject, leaving the reader to infer the wider impact themselves. Not
-  // a forced requirement the way the paragraph-2 framing above is -
-  // whether a genuine cross-asset connection exists is content-dependent,
-  // and forcing one onto a story where the source gives no such link
-  // would just be a new kind of fabrication (the same reasoning
-  // newsParagraph2Templates.js's own directives already apply to
-  // themselves). Grounded strictly in the STYLE_INSTRUCTIONS rule against
-  // inventing a causal connection - this only asks the model to state a
-  // connection the source ALREADY supports, never to manufacture one.
   const crossAssetBlock = `\nCROSS-ASSET IMPACT: if the source material below indicates or clearly implies this story affects a SPECIFIC other instrument - a named stock, commodity, forex pair, or index beyond the primary subject (for example: a central bank rate decision's effect on a specific currency pair, an oil-supply story's effect on a named airline or shipping stock, a chip-export story's effect on a named competitor) - name that instrument explicitly and state how, using only what the source material itself supports. Do not force this if the source gives no such connection to report; a story with no genuine cross-asset angle should not have one invented for it.\n`;
 
   return `${STYLE_INSTRUCTIONS}
@@ -165,24 +96,6 @@ Respond with ONLY a JSON object with these exact keys:
 ${FEW_SHOT_EXAMPLES}`;
 }
 
-// Overrides STYLE_INSTRUCTIONS' "3 short paragraphs / 130 words" limit for
-// Analysis specifically - this is the one category meant to read as real
-// depth rather than a headline blurb (see the content-strategy note this
-// was added under), so it needs its own length rule instead of inheriting
-// the news brief's. Everything else in STYLE_INSTRUCTIONS still applies
-// (voice, banned words, no em dash, never invent a number).
-//
-// A first version of this just said "write 5-7 paragraphs" as one bullet
-// point below STYLE_INSTRUCTIONS' own "three paragraphs" hard rule - live
-// testing (real OpenAI calls) showed that instruction alone consistently
-// lost to the earlier, more specific one: every real draft came back at
-// exactly 3 paragraphs / ~130-170 words regardless. A concrete
-// paragraph-by-paragraph outline (built dynamically below based on what
-// context is actually available) gives the model somewhere specific to
-// put the extra length instead of an abstract count to hit, and repeating
-// the requirement immediately before the output-format instruction (where
-// models weight recent context more heavily) is what actually got real
-// output to 5-7 paragraphs in testing.
 function buildAnalysisOutline(hasCoverage, hasCalendar) {
   const steps = [
     "1. The current price and trend, stated plainly (this can be short).",
@@ -197,16 +110,6 @@ function buildAnalysisOutline(hasCoverage, hasCalendar) {
   return steps.join("\n");
 }
 
-// Analysis briefs: narrate computed technical numbers,
-// never headlines. Called by the separate Analysis job
-// (services/analysis/runAnalysis.js), never by the news scanner.
-//
-// context (optional): { relatedCoverage, calendarContext } - see
-// runAnalysis.js's findRelatedCoverage()/findUpcomingHighImpactEvent() for
-// where these come from. Both are additive: with neither, this still
-// produces a valid, complete Analysis piece from the snapshot alone (the
-// original behavior) - they're only appended when there's genuinely
-// something real to add, never invented to pad length.
 export function buildAnalysisPrompt(snapshot, correctionNote, context = {}) {
   const correctionBlock = correctionNote
     ? `\nCORRECTION NEEDED: your previous attempt at this brief failed this check: ${correctionNote}. Regenerate the full response from scratch, still following every rule above, and specifically fix this.\n`
@@ -215,55 +118,21 @@ export function buildAnalysisPrompt(snapshot, correctionNote, context = {}) {
   const hasCoverage = Boolean(context.relatedCoverage?.length);
   const hasCalendar = Boolean(context.calendarContext);
 
-  // Real published coverage from this site's own news categories (not a
-  // second live fetch - see runAnalysis.js) about the same asset, when
-  // 2+ independently-sourced articles exist recently. This is the actual
-  // differentiator versus a plain rewrite: comparing what different
-  // outlets are reporting, not just citing how many there are.
   const coverageBlock = hasCoverage
     ? `\nRecent reporting on ${snapshot.symbol} from this site's own news coverage (drawn from ${context.relatedCoverage.reduce((n, a) => n + a.sources.length, 0)} distinct outlet(s) across ${context.relatedCoverage.length} recent stor${context.relatedCoverage.length === 1 ? "y" : "ies"}) - use this to compare what's being emphasized and note any disagreement or shift in narrative, don't just restate it:\n${context.relatedCoverage
         .map((a) => `- "${a.title}" (sources: ${a.sources.join(", ")}): ${a.dek}`)
         .join("\n")}\n`
     : "";
 
-  // A genuinely imminent high-impact macro event - only included when one
-  // exists within the next few days (see runAnalysis.js), so this never
-  // shows up as filler on a piece where there's nothing upcoming worth
-  // flagging.
   const calendarBlock = hasCalendar
     ? `\nUpcoming: ${context.calendarContext}. Mention this only if it's genuinely relevant to what you're analyzing here - don't force it in.\n`
     : "";
 
-  // Replaces the old "vary your writing" PROMPT instruction entirely -
-  // two separate rounds of real generation proved that doesn't hold, even
-  // fed back as an explicit correction note: 20+ consecutive real BTC/ETH
-  // drafts failed the exact same formulaic-opening check both on the
-  // first attempt AND after being told specifically to fix it (see
-  // runAnalysis.js's real console log, 2026-09-19). Asking the model to
-  // make a good structural choice, even forcefully, isn't reliable here -
-  // so code picks the opening sentence and the closing paragraph's
-  // framing (services/ai/analysisTemplates.js) and hands them over as a
-  // requirement, not a suggestion. requiredOpeningSentence/closingDirective
-  // are always present in practice (runAnalysis.js sets them before every
-  // real call), but both fall back to empty rather than throwing if a
-  // caller ever omits them (e.g. a future test calling this directly).
   const openingRequirementBlock = context.requiredOpeningSentence
     ? `\nYour body's FIRST SENTENCE MUST be exactly this, verbatim: "${context.requiredOpeningSentence}" Continue paragraph 1 naturally immediately after it (you may add a second sentence to paragraph 1 if useful), then proceed with the rest of the structure below. Do not rephrase, shorten, or replace this sentence - it was chosen deliberately to avoid repeating this site's own recent opening pattern.\n`
     : "";
   const closingRequirementBlock = context.closingDirective ? `\n${context.closingDirective}\n` : "";
 
-  // Live testing caught the exact regression a prior commit fixed for the
-  // news pipeline: a real "Gold (GLD)" Analysis piece came back titled and
-  // worded as plain "Gold" throughout, with "$398.45" (GLD's ETF share
-  // price) stated as if it were spot gold (~$4,300s) - the qualifier that
-  // makes that number honest instead of wrong was simply dropped. Passing
-  // snapshot.symbol into the prompt text was not enough on its own; the
-  // model needs to be told explicitly that the qualifier is not optional
-  // decoration. Only fires for a symbol that actually has one - "BTC" or
-  // "S&P 500" have nothing to preserve here. See findMissingQualifier()
-  // below for the post-generation check backing this up - this instruction
-  // alone is not trusted to hold, the same lesson STYLE_INSTRUCTIONS'
-  // ETF-price rule already teaches (the model dropped that once too).
   const qualifierMatch = /\(([^)]+)\)\s*$/.exec(snapshot.symbol || "");
   const qualifierBlock = qualifierMatch
     ? `\nThe symbol name is "${snapshot.symbol}" - use it EXACTLY as written, including the "(${qualifierMatch[1]})" part, in the title and every single time you state its price in the body. Never shorten it to "${snapshot.symbol.slice(0, qualifierMatch.index).trim()}" alone - that qualifier is what tells the reader this price is the fund/ETF's own share price, not the underlying asset's, and dropping it makes an accurate number read as a fabricated one.\n`
@@ -273,43 +142,8 @@ export function buildAnalysisPrompt(snapshot, correctionNote, context = {}) {
   const minWords = paragraphCount * 65;
   const maxWords = paragraphCount * 90;
 
-  // Live testing (real OpenAI calls) surfaced a second failure mode after
-  // the paragraph-count one above was fixed: the model hit exactly
-  // ${paragraphCount} paragraphs but wrote them short (~35 words each,
-  // ~200 words total) - well under minWords, and short enough that
-  // read_minutes (Math.max(1, round(wordCount/200)), same formula as
-  // every other category) still rounded to "1 min read," identical to a
-  // news blurb, defeating the actual point of this being a longer format.
-  // Stating the word floor as its own blunt, repeated line (not just
-  // buried inside the paragraph-count bullet above) is what fixed it in
-  // testing - a single combined instruction was easy for the model to
-  // satisfy on the paragraph-count half while quietly shortchanging the
-  // word-count half.
-  // Real published regression that motivated this bullet: a live Gold piece
-  // read "The 14-day Relative Strength Index (RSI) stands at 43, placing
-  // gold in the neutral zone... This reading implies that the asset is
-  // neither overbought nor oversold, which historically precedes a period
-  // of consolidation or potential price movement in either direction." -
-  // every clause there is true of ANY asset with an RSI of 43, stated
-  // nowhere specific to gold. The existing "don't pad with generic filler"
-  // bullet only names vague filler phrases ("markets remain volatile"), so
-  // a textbook definition sailed through untouched - it's specific-sounding
-  // prose, just not specific to the asset. This is a different failure mode
-  // and needs its own explicit rule, not a rewording of the filler one.
   const noTextbookRule = `- The reader already knows what RSI, support, resistance, and a moving average ARE - never explain the general concept. Every paragraph must say what THIS specific reading implies for ${snapshot.symbol} right now, not what that kind of reading means in general. Test: if a paragraph could be copy-pasted into an analysis of a completely different asset with only the numbers swapped, it has failed this rule and must be rewritten around what's actually specific to ${snapshot.symbol}'s current situation.`;
 
-  // The abstract rule above, alone, was tested against real OpenAI output
-  // and did not hold - two fresh live drafts (Bitcoin, Ethereum) both still
-  // produced textbook RSI paragraphs after it was added ("This neutral
-  // reading suggests that there is no immediate overbought or oversold
-  // condition, which often precedes price corrections or rallies" - true
-  // of any asset at RSI 54, nothing Bitcoin-specific in it). This file's
-  // own opening comment already documents the fix for exactly this
-  // pattern: "loose adjectives... don't reliably change model output -
-  // hard rules and the few-shot examples... do." A concrete BAD/GOOD
-  // contrast, not another rephrased rule, is what's actually shown to work
-  // here - GOOD is built from this call's real snapshot numbers so the
-  // model has an on-topic template for THIS asset, not a generic sample.
   const noTextbookExample = `Concrete example of this exact failure, from real published output (never repeat this pattern):
 BAD (textbook definition - this sentence is true of any asset with this RSI, nothing here is specific to the asset): "The 14-day RSI stands at 43, placing the asset in the neutral zone. This reading implies that the asset is neither overbought nor oversold, which historically precedes a period of consolidation or potential price movement in either direction."
 GOOD (states what this reading means for this asset, right now, at its real numbers): "${snapshot.symbol}'s RSI of ${snapshot.rsi_14} shows momentum has cooled from the push that carried it toward ${formatMarketValue(snapshot.resistance, snapshot.assetClass)}, without falling far enough to flag the kind of oversold reading that's preceded its sharper pullbacks - there's no exhaustion signal in either direction at ${formatMarketValue(snapshot.price, snapshot.assetClass)} right now."
@@ -363,56 +197,6 @@ Respond with ONLY a JSON object with these exact keys:
 }`;
 }
 
-// Independent verification check (services/ai/provider.js,
-// generateRedundancyCheck) - scoped only to auto-publish candidates (2+
-// sources, about to skip the review queue). This started as two narrow
-// questions and picked up a third below for a different class of problem
-// (an invented causal link, not a number or a redundant paragraph) - kept
-// as one call/one function/one DB flag rather than standing up a parallel
-// mechanism, since the whole point of this check is "ask an independent
-// model instance a narrow, specific question about this draft," and that
-// pattern fits the new question exactly as well as the first two:
-// 1. Paragraph 3 redundancy - the Jaccard-based findBodyProblem() check
-//    already catches lexical (shared-word) redundancy between paragraph 3
-//    and 1/2; this catches the same point restated in different
-//    vocabulary, which word-overlap similarity can't see.
-// 2. Paragraph 1 anchor fact - STYLE_INSTRUCTIONS already tells the model
-//    paragraph 1 must lead with a real number/date/named source rather
-//    than vague scene-setting; this verifies that actually happened
-//    instead of just trusting the instruction was followed.
-//    Investigated (not assumed) whether this question should ALSO catch a
-//    body whose real news is thin/undisclosed - article #875 ("Bitcoin
-//    Faces Key Test on October 18 Amid New Tariffs") admits in paragraph 3
-//    that "the specific rates and targets... have yet to be disclosed." It
-//    shouldn't, and doesn't need to: sampling the last 100 published/
-//    review News articles for that admission-of-thinness phrasing found
-//    only 3/100 hits, ALL landing in paragraph 3 or later, NONE in
-//    paragraph 1 - and #875's own paragraph 1 has a real anchor fact
-//    ("October 18" is a genuine, checkable date), so this question
-//    correctly answers true for it regardless. This question is
-//    deliberately scoped to paragraph 1 only; a thin admission three
-//    paragraphs later is a different failure mode (see
-//    findVagueCrossAssetClaim in provider.js, which is what #875 actually
-//    needed) and the low, exclusively-later-paragraph incidence found here
-//    doesn't support adding a new mechanical gate for it - some legitimate
-//    "X is expected to happen, here's why it matters" previews use this
-//    exact phrasing correctly and shouldn't be banned.
-// 3. Invented causal/logical connection - real regression: source material
-//    stated only two disconnected facts ("BoJ hiked rates overnight" /
-//    "the yen kept sliding"), and the draft rewrote this as the slide
-//    "prompting speculation about further monetary easing" - invented,
-//    and backwards (a hike is tightening, not easing). Unlike questions 1
-//    and 2, there's no source material in this prompt for 1/2 to check
-//    against - sourceText (the original RSS title/snippet(s) the draft was
-//    written from) is new, added only so question 3 has something to
-//    verify against. Honest limitation, worth stating plainly rather than
-//    overclaiming: this is an LLM judging another LLM's output for a
-//    reasoning error, not a deterministic diff like the price/qualifier/
-//    distance checks - it can miss subtler invented connections, and it's
-//    only ever run for real providers in the first place (see provider.js).
-//    It's still worth having, on the same logic as the other two
-//    questions: a narrow, specific ask is far more reliable than a general
-//    "is this good?" pass, even for something this fuzzy.
 export function buildRedundancyCheckPrompt({ paragraph1, paragraph2, paragraph3, sourceText }) {
   const sourceBlock = sourceText
     ? `\nOriginal source material this brief was written from:\n${sourceText}\n`
@@ -442,34 +226,6 @@ Answer four questions:
 Respond with ONLY a JSON object with these exact keys: { "adds_new_information": true or false, "reason": "one sentence explaining your answer to question 1", "paragraph1_has_anchor_fact": true or false, "anchor_fact_reason": "one sentence explaining your answer to question 2", "unsupported_causal_claim": true or false, "causal_claim_reason": "one sentence explaining your answer to question 3", "unacknowledged_divergence": true or false, "divergence_reason": "one sentence explaining your answer to question 4" }`;
 }
 
-// Analysis-only independent verification, added after auditPublishedAnalysis.js
-// found a real, confirmed gap the deterministic similarity check
-// (findAnalysisSimilarityMismatch, runAnalysis.js) structurally can't
-// close - see ANALYSIS_FRESHNESS_CHECK_FIELDS in schemas.js for the full
-// real-regression writeup (articles 281/285/301). This is a single narrow
-// question, not folded into buildRedundancyCheckPrompt above, because the
-// inputs don't fit that shape (whole body vs. a whole prior article, not
-// three paragraphs of the same draft) and because news articles (which
-// also use that prompt) have no "prior article about this recurring
-// instrument" to compare against.
-// First version of this prompt (no allowlist below) was tested against
-// the real published backlog via auditPublishedAnalysis.js and was WAY
-// too broad: it flagged 23 of 24 real article pairs, the overwhelming
-// majority for things like "restates the support level of $75,590.24" or
-// "repeats the current price... presenting it as a new fact despite the
-// underlying situation remaining largely unchanged" - but price/support/
-// resistance/RSI/trend are the article's REQUIRED payload (buildAnalysisPrompt
-// demands them every single time), and runAnalysisScan() already only
-// generates a new piece when movedMeaningfully() says the numbers changed
-// enough to matter - so a genuinely unchanged support/resistance level (a
-// 14-day window that doesn't shift every single day even when price does)
-// or a trend that's still bullish is CORRECT reporting, not staleness. If
-// this had shipped as written, it would have retried or flagged nearly
-// every real Analysis article ever generated. The explicit allowlist
-// below is what's different in this version - confirmed by re-running the
-// same real backlog afterward: it stopped flagging the core-figures noise
-// while still catching the two real cases (articles 285/301) that
-// motivated this check in the first place.
 export function buildAnalysisFreshnessCheckPrompt({ body, priorArticleBody }) {
   return `You are checking a financial analysis brief for stale, recycled NARRATIVE content before it publishes - not for repeated numbers.
 
@@ -486,9 +242,6 @@ Question: does today's draft restate a NARRATIVE claim, statistic, or quote abou
 Respond with ONLY a JSON object with these exact keys: { "restates_stale_fact": true or false, "reason": "one sentence explaining your answer, naming the specific repeated narrative claim if true" }`;
 }
 
-// Evergreen SEO refresh (glossary entries + static pages) - see
-// services/seo/evergreenRefresh.js. Only ever asks for seo_title/
-// seo_description; never touches or regenerates the actual body content.
 export function buildSeoRefreshPrompt({ label, body }) {
   return `You write SEO metadata for Hodl Horizon, a finance and crypto news site.
 
